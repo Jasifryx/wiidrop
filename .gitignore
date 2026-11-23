@@ -1,0 +1,11 @@
+build/
+*.elf
+*.rpx
+*.wuhb
+*.map
+__pycache__/
+data/*.mp3
+tools/sites.txt
+tools/rvz2iso/
+preview/
+*.wav
