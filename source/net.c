@@ -22,8 +22,26 @@ const char *net_status(void)
 
 #define USER_AGENT "WiiDrop/1.0 (Wii U)"
 
+/* Mozilla's list of trusted certificate authorities (curl.se/ca/cacert.pem), built into the app from
+   data/cacert.pem, so HTTPS certificates can be checked: the Wii U has no list of its own for homebrew. */
+#if __has_include("cacert_pem.h")
+#include "cacert_pem.h"
+#define HAVE_CA_BUNDLE 1
+/* mbedTLS only reads a PEM list that ends in a NUL byte, so keep a terminated copy (made once in net_init) */
+static char *gCa;
+static size_t gCaLen;
+#endif
+
 int net_init(void)
 {
+#ifdef HAVE_CA_BUNDLE
+    gCa = malloc((size_t)cacert_pem_size + 1);
+    if (gCa) {
+        memcpy(gCa, cacert_pem, cacert_pem_size);
+        gCa[cacert_pem_size] = '\0';
+        gCaLen = (size_t)cacert_pem_size + 1;
+    }
+#endif
 #ifdef __WIIU__
     ACInitialize();
     ACConnect();
@@ -94,11 +112,32 @@ static void apply_common(CURL *c, const Config *cfg, const char *url, char *errb
         curl_easy_setopt(c, CURLOPT_USERNAME, cfg->user);
         curl_easy_setopt(c, CURLOPT_PASSWORD, cfg->password);
     }
-    if (cfg->ca_file[0]) curl_easy_setopt(c, CURLOPT_CAINFO, cfg->ca_file);
+    if (cfg->ca_file[0]) {
+        curl_easy_setopt(c, CURLOPT_CAINFO, cfg->ca_file); /* the user's own list (e.g. for a self-signed server) */
+    } else {
+#ifdef HAVE_CA_BUNDLE
+        if (gCa) {
+            struct curl_blob ca = {gCa, gCaLen, CURL_BLOB_NOCOPY};
+            curl_easy_setopt(c, CURLOPT_CAINFO_BLOB, &ca);
+        }
+#endif
+    }
     if (cfg->insecure) {
         curl_easy_setopt(c, CURLOPT_SSL_VERIFYPEER, 0L);
         curl_easy_setopt(c, CURLOPT_SSL_VERIFYHOST, 0L);
     }
+}
+
+/* Error text for a failed transfer. A certificate that can't be checked gets advice instead of curl's
+   wording (and contains "certificate", so WiiDrop doesn't retry it 20 times). */
+static void set_err(char *err, size_t errlen, CURLcode rc, const char *errbuf)
+{
+    if (rc == CURLE_PEER_FAILED_VERIFICATION || rc == CURLE_SSL_CACERT_BADFILE) {
+        snprintf(err, errlen, "The server's HTTPS certificate couldn't be verified. If it's your own server with a "
+                              "self-signed certificate, set ca_file (or insecure = 1) in config.ini.");
+        return;
+    }
+    snprintf(err, errlen, "%s", *errbuf ? errbuf : curl_easy_strerror(rc));
 }
 
 /* ---- text fetch ---- */
@@ -143,7 +182,7 @@ char *net_fetch_text(const Config *cfg, const char *url, char *err, size_t errle
     curl_easy_cleanup(c);
 
     if (rc != CURLE_OK) {
-        snprintf(err, errlen, "%s", errbuf[0] ? errbuf : curl_easy_strerror(rc));
+        set_err(err, errlen, rc, errbuf);
         free(b.data);
         return NULL;
     }
@@ -219,7 +258,7 @@ uint8_t *net_fetch_mem(const Config *cfg, const char *url, size_t max, int range
         *outLen = b.len;
         return b.data;
     }
-    snprintf(err, errlen, "%s", errbuf[0] ? errbuf : curl_easy_strerror(rc));
+    set_err(err, errlen, rc, errbuf);
     free(b.data);
     return NULL;
 }
@@ -412,6 +451,10 @@ static int par_thread(void *ud)
             if (rc == CURLE_OK && code == 206 && s->got == s->len) {
                 s->state = SL_DONE;
                 SDL_CondBroadcast(p->cond);
+            } else if (rc == CURLE_PEER_FAILED_VERIFICATION || rc == CURLE_SSL_CACERT_BADFILE) {
+                p->fatal = 1;
+                set_err(p->err, sizeof(p->err), rc, s->errbuf);
+                SDL_CondBroadcast(p->cond);
             } else if (code == 200 || (rc == CURLE_OK && s->got != s->len) || (code >= 400 && code < 500 && code != 408 && code != 429)) {
                 /* server stopped honouring ranges, or refused: no point retrying this piece */
                 p->fatal = 1;
@@ -513,7 +556,7 @@ static int probe(const Config *cfg, const char *url, uint64_t from, uint64_t *to
         }
         return 0;
     }
-    snprintf(err, errlen, "%s", errbuf[0] ? errbuf : curl_easy_strerror(rc));
+    set_err(err, errlen, rc, errbuf);
     return -1;
 }
 
@@ -702,6 +745,6 @@ int net_download(const Config *cfg, const char *url, uint64_t resume_from,
         return -1;
     }
     if (code == 416 && resume_from > 0) return 0;
-    snprintf(err, errlen, "%s", errbuf[0] ? errbuf : curl_easy_strerror(rc));
+    set_err(err, errlen, rc, errbuf);
     return -1;
 }

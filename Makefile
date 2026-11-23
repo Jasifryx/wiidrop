@@ -103,6 +103,11 @@ $(OFILES_SRC): $(HFILES_BIN)
 	@echo $(notdir $<)
 	@$(bin2o)
 
+# data/cacert.pem -> cacert_pem[] (trusted certificate authorities for HTTPS)
+%.pem.o %_pem.h: %.pem
+	@echo $(notdir $<)
+	@$(bin2o)
+
 -include $(DEPENDS)
 
 #-------------------------------------------------------------------------------

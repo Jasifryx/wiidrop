@@ -150,16 +150,18 @@ crawled together into one sorted links.txt. Add `--append` to add new finds to a
 ```ini
 user =          # basic auth for your host, if it needs one
 password =
-ca_file =       # CA bundle on the SD card for verified https
-insecure = 1    # default: https works without a CA bundle, but certificates aren't checked
+ca_file =       # your own certificate / CA on the SD card (for a self-signed server)
+insecure = 0    # 1 = don't check https certificates at all
 music = 1       # 0 = start muted
 connections = 4 # parallel connections per download (1-8); 1 for hosts that limit connections
 links_url =     # load links.txt from this URL instead (the last copy is kept on the SD card)
 region = USA    # preferred region for "hide region duplicates": USA, Europe or Japan
 ```
-With `insecure = 1` the connection is still encrypted, but someone on your network could impersonate the host.
-For real certificate checks, copy a `cacert.pem` (from curl.se) to the SD card, set
-`ca_file = fs:/vol/external01/wiiu/apps/wiidrop/cacert.pem` and set `insecure = 0`.
+HTTPS certificates are checked against Mozilla's list of trusted authorities, which is built into WiiDrop
+(`data/cacert.pem`, from curl.se). Servers with a normal certificate (Let's Encrypt etc.) just work. For your own
+server with a self-signed certificate, copy its certificate to the SD card and set
+`ca_file = fs:/vol/external01/wiiu/apps/wiidrop/myserver.pem`, or set `insecure = 1` (still encrypted, but
+someone on your network could impersonate the server). Plain `http://` links aren't encrypted at all.
 The password is stored in plain text on the SD card.
 
 ## Layout

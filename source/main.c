@@ -2279,6 +2279,7 @@ static int finalize(Entry *e, const SplitWriter *from, char *err, size_t errlen)
 /* Network failures are worth retrying; a server saying "no" (404, 403, 401...) isn't. */
 static bool retryable(const char *err)
 {
+    if (strstr(err, "certificate")) return false; /* won't fix itself: needs a config change */
     const char *http = strstr(err, "returned error: ");
     if (http) {
         int code = atoi(http + 16);

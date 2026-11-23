@@ -12,10 +12,12 @@ static const char *CONFIG_TEMPLATE =
     "user =\n"
     "password =\n"
     "\n"
-    "# HTTPS: path to a CA bundle on the SD card (e.g. fs:/vol/external01/wiiu/apps/wiidrop/cacert.pem),\n"
-    "# or insecure = 1 to skip certificate checks\n"
+    "# HTTPS certificates are checked against the list of trusted authorities built into WiiDrop.\n"
+    "# For your own server with a self-signed certificate: put its certificate (or your own CA) on the SD card\n"
+    "# and set ca_file = fs:/vol/external01/wiiu/apps/wiidrop/myserver.pem, or set insecure = 1 to skip the\n"
+    "# check (the connection is still encrypted, but anyone on your network could pretend to be your server).\n"
     "ca_file =\n"
-    "insecure = 1\n"
+    "insecure = 0\n"
     "\n"
     "# Menu music: 1 = on, 0 = start muted (Y toggles it in the app).\n"
     "# Put your own track at sd:/wiiu/apps/wiidrop/music.mp3 to replace the built-in one.\n"
@@ -62,7 +64,7 @@ static void write_template(const char *path, const char *text)
 void config_load(const char *path, Config *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
-    cfg->insecure = 1; /* the console has no CA store; most people won't add one */
+    cfg->insecure = 0; /* certificates are checked against the built-in list (data/cacert.pem) */
     cfg->music = 1;
     cfg->connections = 4;
     snprintf(cfg->region, sizeof(cfg->region), "USA");

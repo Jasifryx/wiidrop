@@ -7,6 +7,7 @@ the full license texts are in each project's source distribution, linked below.
 
 | Component | Use | License |
 |---|---|---|
+| [Mozilla CA certificate list](https://curl.se/docs/caextract.html) (curl's `cacert.pem`), `data/cacert.pem` | checking HTTPS certificates | MPL-2.0 |
 | [LZMA SDK](https://www.7-zip.org/sdk.html) C decoder (7-Zip 26.06), `source/lzma/` | .7z extraction, RVZ/WIA LZMA | Public domain |
 | [Zstandard](https://github.com/facebook/zstd) 1.5.7 decompressor, `source/zstd/` | RVZ Zstandard | BSD-3-Clause (dual-licensed with GPL-2.0) |
 
@@ -34,7 +35,7 @@ the full license texts are in each project's source distribution, linked below.
 | [bzip2](https://sourceware.org/bzip2/) | RVZ bzip2, FreeType | bzip2 License (BSD-style) |
 
 WiiDrop itself is GPL-3.0-or-later. Every library above can be combined with it: the permissive ones (zlib, MIT,
-BSD, curl, libpng, IJG, bzip2, public domain) and Apache-2.0 directly; libmpg123's LGPL-2.1 too; Zstandard is used
+BSD, curl, libpng, IJG, bzip2, public domain), Apache-2.0 and the CA list's MPL-2.0 directly; libmpg123's LGPL-2.1 too; Zstandard is used
 under its BSD-3-Clause option and FreeType under its GPL-2.0-or-later option (FreeType is dual-licensed FTL / GPL).
 
 Portions of this software are copyright © The FreeType Project (https://freetype.org). All rights reserved.

@@ -39,6 +39,15 @@ static int idCount, idCap;
 static int *idTable; /* open addressing: entry index + 1, 0 = empty */
 static int idTableCap;
 
+/* A disc ID is 6 capital letters / digits. IDs from the title list or ids.txt end up in file names
+   (covers/<ID>.png), so anything else is ignored. */
+static int valid_id(const char *s)
+{
+    for (int i = 0; i < 6; i++)
+        if (!((s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= '0' && s[i] <= '9'))) return 0;
+    return s[6] == '\0' || s[6] == ' ' || s[6] == '\t';
+}
+
 static uint32_t key_of(const char *hash)
 {
     return (uint32_t)strtoul(hash, NULL, 16) * 2654435761u;
@@ -101,7 +110,7 @@ static void id_cache_load(void)
     while (fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\r\n")] = '\0';
         char *a = strtok(line, "\t"), *b = strtok(NULL, "\t"), *c = strtok(NULL, "\t");
-        if (a && b) id_cache_add(a, b, c ? c : "");
+        if (a && b && valid_id(b)) id_cache_add(a, b, c ? c : "");
     }
     fclose(f);
 }
@@ -344,7 +353,7 @@ int covers_load_titles(const char *path)
     while (fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\r\n")] = '\0';
         char *eq = strstr(line, " = ");
-        if (!eq || eq - line != 6) continue; /* 6-character disc IDs only */
+        if (!eq || eq - line != 6 || !valid_id(line)) continue; /* 6-character disc IDs only */
         if (n == cap) {
             cap = cap ? cap * 2 : 4096;
             TitleRow *r = realloc(rows, (size_t)cap * sizeof(TitleRow));
