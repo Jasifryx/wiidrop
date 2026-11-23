@@ -10,6 +10,7 @@ typedef struct {
     int connections;    /* parallel connections per download (1-8, default 4) */
     char links_url[1024]; /* optional: fetch links.txt from here (the SD copy is the fallback) */
     char region[16];    /* preferred region for hiding duplicates: USA / Europe / Japan */
+    int update_check;   /* 1 = look for a new WiiDrop on GitHub at start (default) */
 } Config;
 
 /* Loads config.ini, writing a commented template if it does not exist. */

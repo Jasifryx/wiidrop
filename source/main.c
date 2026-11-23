@@ -22,10 +22,12 @@
 #include <strings.h>
 
 #include <coreinit/im.h>
+#include <coreinit/launch.h>
 #include <padscore/kpad.h>
 #include <padscore/wpad.h>
 #include <mbedtls/md5.h>
 #include <mbedtls/sha1.h>
+#include <mbedtls/sha256.h>
 #include <zlib.h>
 #include <coreinit/memory.h>
 #include <coreinit/time.h>
@@ -34,6 +36,7 @@
 
 #include <dirent.h>
 #include <inttypes.h>
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -70,8 +73,11 @@
 #define USBGX_ROOT     SD_ROOT "/apps/usbloader_gx"
 #define USBGX_COVERS   USBGX_ROOT "/images/2D"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
 #define MUSIC_MAX_VOLUME 84 /* of 128 */
-#define WIIDROP_VERSION  "1.0.0"
+#define WIIDROP_VERSION  "1.0.0-beta.3"
 
 /* ------------------------------------------------------------------ app state */
 
@@ -89,6 +95,8 @@ enum { SORT_LIST, SORT_AZ, SORT_INSTALLED, SORT_COUNT };
 enum { SHOW_ALL, SHOW_FAV, SHOW_INSTALLED, SHOW_NOT_INSTALLED, SHOW_QUEUED, SHOW_COUNT };
 static int gSort, gShow;
 static bool gHideDupes;
+static bool gQueueOff;   /* turn the Wii U off when the queue finishes */
+static bool gChimeOn = true; /* a short chime when a download / the queue is done */
 static char gRegionPref = 'E'; /* E / P / J: which copy "hide region duplicates" keeps */
 static char gRegionOnly;        /* 0 = all regions, else E / P / J: hide games from other regions */
 
@@ -214,6 +222,8 @@ static void music_shutdown(void)
 
 static void poll_covers(void);
 static void apply_search(const char *query);
+static void batch_note(uint64_t done, uint64_t total, uint64_t bps);
+static void chime(void);
 
 /* Must run every frame: SDL's Wii U backend handles ProcUI (HOME menu, power-off, exit) in here. */
 static void pump(void)
@@ -439,6 +449,7 @@ typedef struct {
     /* filled once installed (from installed.txt) */
     char id[7];
     char folder[96];
+    int disc; /* GameCube disc 2 -> disc2.iso next to game.iso */
     bool gc;
     bool installed;
     bool partial;
@@ -516,11 +527,12 @@ static StagedKind staged_kind(const SplitWriter *sw)
     return (k == DISC_WII_WBFS || k == DISC_GC_ISO) ? STAGED_DISC : STAGED_BAD;
 }
 
-static void final_writer(bool gc, const char *folder, const char *id, SplitWriter *sw)
+static void final_writer(bool gc, int disc, const char *folder, const char *id, SplitWriter *sw)
 {
     memset(sw, 0, sizeof(*sw));
     if (gc) {
-        snprintf(sw->base, sizeof(sw->base), SD_ROOT "/games/%s/game", folder);
+        /* Nintendont: disc 1 is game.iso, disc 2 is disc2.iso in the same folder */
+        snprintf(sw->base, sizeof(sw->base), SD_ROOT "/games/%s/%s", folder, disc ? "disc2" : "game");
         sw->ext0 = ".iso";
         sw->split = 0;
         sw->part_size = UINT64_MAX;
@@ -541,7 +553,7 @@ static void load_installed(void)
     while (fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\r\n")] = '\0';
         char *f0 = strtok(line, "\t"), *f1 = strtok(NULL, "\t"), *f2 = strtok(NULL, "\t"),
-             *f3 = strtok(NULL, "\t");
+             *f3 = strtok(NULL, "\t"), *f4 = strtok(NULL, "\t");
         if (!f0 || !f1 || !f2 || !f3) continue;
         for (int i = 0; i < entryCount; i++) {
             Entry *e = &entries[i];
@@ -549,6 +561,7 @@ static void load_installed(void)
             e->gc = !strcmp(f1, "gc");
             snprintf(e->id, sizeof(e->id), "%s", f2);
             snprintf(e->folder, sizeof(e->folder), "%s", f3);
+            e->disc = (f4 && !strcmp(f4, "2")) ? 1 : 0;
         }
     }
     fclose(f);
@@ -560,7 +573,8 @@ static void save_installed(void)
     if (!f) return;
     for (int i = 0; i < entryCount; i++) {
         Entry *e = &entries[i];
-        if (e->folder[0]) fprintf(f, "%s\t%s\t%s\t%s\n", e->hash, e->gc ? "gc" : "wii", e->id, e->folder);
+        if (e->folder[0])
+            fprintf(f, "%s\t%s\t%s\t%s%s\n", e->hash, e->gc ? "gc" : "wii", e->id, e->folder, e->disc ? "\t2" : "");
     }
     fclose(f);
 }
@@ -648,7 +662,7 @@ static void refresh_status(Entry *e)
     char path[600];
     e->installed = false;
     if (e->folder[0]) {
-        final_writer(e->gc, e->folder, e->id, &sw);
+        final_writer(e->gc, e->disc, e->folder, e->id, &sw);
         sw_part_path(&sw, 0, path, sizeof(path));
         e->installed = file_exists(path);
     }
@@ -726,6 +740,11 @@ static void lower_copy(char *dst, size_t n, const char *src)
 static const char *entry_title(int i)
 {
     return items && items[i].title ? items[i].title : entries[i].link.name;
+}
+
+static int cmp_queue(const void *a, const void *b)
+{
+    return queue_pos(*(const int *)a) - queue_pos(*(const int *)b);
 }
 
 static int cmp_view(const void *a, const void *b)
@@ -822,6 +841,12 @@ static void group_key(int i, char *out, size_t n)
     }
     out[j] = '\0';
     if (!j) snprintf(out, n, "#%s", entries[i].hash); /* nothing to compare: never a duplicate */
+    /* "(Disc 2)" is part of the game, not a region tag: disc 1 and disc 2 are never duplicates */
+    for (const char *s = base; *s; s++)
+        if (!strncasecmp(s, "(disc ", 6) && s[6] >= '0' && s[6] <= '9' && j + 6 < n) {
+            snprintf(out + j, n - j, "#disc%c", s[6]);
+            break;
+        }
 }
 
 static char (*gKeys)[64];
@@ -905,7 +930,8 @@ static void build_view(void)
         if (ok) gView[gViewCount++] = i;
     }
     if (gHideDupes) hide_duplicates();
-    if (gSort != SORT_LIST && gViewCount > 1) qsort(gView, (size_t)gViewCount, sizeof(int), cmp_view);
+    if (gShow == SHOW_QUEUED && gViewCount > 1) qsort(gView, (size_t)gViewCount, sizeof(int), cmp_queue);
+    else if (gSort != SORT_LIST && gViewCount > 1) qsort(gView, (size_t)gViewCount, sizeof(int), cmp_view);
     for (int p = 0; p < gViewCount; p++) gPosOf[gView[p]] = p;
 }
 
@@ -1016,8 +1042,9 @@ static void save_state(void)
 {
     FILE *f = fopen(STATE_PATH, "w");
     if (!f) return;
-    fprintf(f, "sort=%d\nshow=%d\ndupes=%d\nregion=%c\nonly=%c\nmusic=%d\n", gSort, gShow, gHideDupes ? 1 : 0,
-            gRegionPref, gRegionOnly ? gRegionOnly : 'A', gMusicState == 1 ? 1 : 0);
+    fprintf(f, "sort=%d\nshow=%d\ndupes=%d\nregion=%c\nonly=%c\nmusic=%d\nqueueoff=%d\nchime=%d\n", gSort, gShow,
+            gHideDupes ? 1 : 0, gRegionPref, gRegionOnly ? gRegionOnly : 'A', gMusicState == 1 ? 1 : 0, gQueueOff ? 1 : 0,
+            gChimeOn ? 1 : 0);
     fclose(f);
 }
 
@@ -1037,6 +1064,8 @@ static void load_state(int *music)
         else if (sscanf(line, "dupes=%d", &v) == 1) gHideDupes = v != 0;
         else if (sscanf(line, "region=%c", &c) == 1 && strchr("EPJ", c)) gRegionPref = c;
         else if (sscanf(line, "only=%c", &c) == 1) gRegionOnly = strchr("EPJ", c) ? c : 0;
+        else if (sscanf(line, "queueoff=%d", &v) == 1) gQueueOff = v != 0;
+        else if (sscanf(line, "chime=%d", &v) == 1) gChimeOn = v != 0;
         else if (sscanf(line, "music=%d", &v) == 1) *music = v != 0;
     }
     fclose(f);
@@ -1396,7 +1425,8 @@ static void draw_list_scene(void)
                            {"-", "Search"},
                            {"+", "Menu"}};
         char right[64];
-        if (gQueueCount) snprintf(right, sizeof(right), "Queue: %d    %d / %d", gQueueCount, gSel + 1, gViewCount);
+        if (gShow == SHOW_QUEUED) snprintf(right, sizeof(right), "L/R: move in queue    %d / %d", gSel + 1, gViewCount);
+        else if (gQueueCount) snprintf(right, sizeof(right), "Queue: %d    %d / %d", gQueueCount, gSel + 1, gViewCount);
         else snprintf(right, sizeof(right), "%d / %d", gSel + 1, gViewCount);
         ui_footer(hints, 5, right);
     } else {
@@ -1948,6 +1978,7 @@ static int dl_progress(void *ud, uint64_t done, uint64_t total, uint64_t bps)
                        : s->zipMode ? (converting ? "Unzipping + converting to WBFS as it downloads" : "Unzipping as it downloads")
                        : s->convert ? "Converting to WBFS as it downloads"
                                     : "HOME is disabled until this finishes";
+    if (gBatch) batch_note(done, total, bps);
     static char note[200];
     snprintf(note, sizeof(note), "%s  -  %s", net_status()[0] ? net_status() : "Connecting", what);
     p.note = note;
@@ -2242,9 +2273,19 @@ static int finalize(Entry *e, const SplitWriter *from, char *err, size_t errlen)
         return -1;
     }
     bool gc = (k == DISC_GC_ISO);
+    int disc = gc ? info.disc : 0;
     char folder[96];
     make_folder_name(info.title[0] ? info.title : e->link.name, info.id, folder, sizeof(folder));
-    final_writer(gc, folder, info.id, &to);
+    if (gc) { /* the other disc of this game is already installed: use its folder, whatever it's called */
+        for (int i = 0; i < entryCount; i++) {
+            Entry *o = &entries[i];
+            if (o != e && o->gc && o->folder[0] && !strcmp(o->id, info.id) && o->disc != disc) {
+                snprintf(folder, sizeof(folder), "%s", o->folder);
+                break;
+            }
+        }
+    }
+    final_writer(gc, disc, folder, info.id, &to);
 
     char dir[600];
     snprintf(dir, sizeof(dir), "%s", to.base);
@@ -2268,6 +2309,7 @@ static int finalize(Entry *e, const SplitWriter *from, char *err, size_t errlen)
     }
 
     e->gc = gc;
+    e->disc = disc;
     snprintf(e->id, sizeof(e->id), "%s", info.id);
     snprintf(e->folder, sizeof(e->folder), "%s", folder);
     save_installed();
@@ -2688,8 +2730,9 @@ static int download_entry(const Config *cfg, Entry *e)
     transfer_end();
 
     char msg[460];
-    snprintf(msg, sizeof(msg), "Saved to sd:/%s/%s\nLaunch it with %s.%s", e->gc ? "games" : "wbfs", e->folder,
-             e->gc ? "Nintendont" : "USB Loader GX or WiiFlow", sumNote);
+    snprintf(msg, sizeof(msg), "Saved to sd:/%s/%s%s\nLaunch it with %s.%s", e->gc ? "games" : "wbfs", e->folder,
+             e->disc ? "/disc2.iso" : "", e->gc ? "Nintendont" : "USB Loader GX or WiiFlow", sumNote);
+    if (!gBatch) chime();
     message_box(UI_MSG_OK, "Installed!", msg);
     return 0;
 
@@ -2705,7 +2748,7 @@ out:
 static void delete_installed(Entry *e)
 {
     SplitWriter sw;
-    final_writer(e->gc, e->folder, e->id, &sw);
+    final_writer(e->gc, e->disc, e->folder, e->id, &sw);
     sw_remove_all(&sw);
     char dir[600];
     snprintf(dir, sizeof(dir), "%s", sw.base);
@@ -2915,16 +2958,130 @@ static int run_one(const Config *cfg, int idx)
     return r;
 }
 
+/* move a queued game one place earlier (dir < 0) or later */
+static void queue_move(int idx, int dir)
+{
+    int pos = queue_pos(idx) - 1;
+    int to = pos + (dir < 0 ? -1 : 1);
+    if (pos < 0 || to < 0 || to >= gQueueCount) return;
+    int t = gQueue[to];
+    gQueue[to] = gQueue[pos];
+    gQueue[pos] = t;
+    save_hash_list(QUEUE_PATH, false);
+}
+
+/* "about 1 h 20 min" */
+static void fmt_eta(char *out, size_t n, uint64_t seconds)
+{
+    if (seconds < 60) snprintf(out, n, "less than a minute");
+    else if (seconds < 3600) snprintf(out, n, "about %u min", (unsigned)((seconds + 30) / 60));
+    else snprintf(out, n, "about %u h %u min", (unsigned)(seconds / 3600), (unsigned)(seconds % 3600 / 60));
+}
+
+/* queue progress for the note line: game n of total, and the time left for the whole queue */
+static int gBatchIndex, gBatchTotal;
+static uint64_t gBatchAfter;   /* bytes of the games after this one (0 if any size is unknown) */
+static bool gBatchSizesKnown;
+
+static void batch_note(uint64_t done, uint64_t total, uint64_t bps)
+{
+    char eta[64] = "";
+    if (gBatchSizesKnown && total > done && bps > 0) {
+        char t[40];
+        fmt_eta(t, sizeof(t), (total - done + gBatchAfter) / bps);
+        snprintf(eta, sizeof(eta), "  -  %s left", t);
+    }
+    snprintf(gBatchNote, sizeof(gBatchNote), "Queue: game %d of %d%s  -  B pauses the queue", gBatchIndex, gBatchTotal, eta);
+}
+
+/* a soft two-note chime, generated once (no sound file) */
+static Mix_Chunk *gChime;
+static int16_t *gChimePcm;
+
+static void chime_init(void)
+{
+    int freq = 0, ch = 0;
+    Uint16 fmt = 0;
+    if (!Mix_QuerySpec(&freq, &fmt, &ch) || fmt != AUDIO_S16SYS || ch != 2) return;
+    int frames = freq * 3 / 2;
+    gChimePcm = calloc((size_t)frames * 2, sizeof(int16_t));
+    if (!gChimePcm) return;
+    static const float notes[2] = {880.0f, 1174.66f}; /* A5, then D6 */
+    for (int k = 0; k < 2; k++) {
+        int start = k * freq / 5;
+        for (int i = start; i < frames; i++) {
+            float t = (float)(i - start) / freq;
+            float env = expf(-t * 3.2f) * (t < 0.004f ? t / 0.004f : 1.0f);
+            float s = (sinf(2 * (float)M_PI * notes[k] * t) + 0.3f * sinf(2 * (float)M_PI * notes[k] * 2.76f * t) *
+                       expf(-t * 6.0f)) * env * 0.22f;
+            int v = gChimePcm[i * 2] + (int)(s * 32767);
+            v = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
+            gChimePcm[i * 2] = gChimePcm[i * 2 + 1] = (int16_t)v;
+        }
+    }
+    gChime = Mix_QuickLoad_RAW((Uint8 *)gChimePcm, (Uint32)(frames * 4));
+}
+
+static void chime(void)
+{
+    if (gChimeOn && gChime) Mix_PlayChannel(-1, gChime, 0);
+}
+
+/* "Turning off in 15 s" with B to cancel. Returns true if the console should turn off. */
+static bool power_off_countdown(void)
+{
+    double until = now_s() + 15;
+    while (!gQuit) {
+        pump();
+        if (read_input().pressed & (VPAD_BUTTON_B | VPAD_BUTTON_A)) return false;
+        double left = until - now_s();
+        if (left <= 0) return true;
+        char body[160];
+        snprintf(body, sizeof(body), "The queue is done. Turning the Wii U off in %d s.\nPress B to keep it on.",
+                 (int)left + 1);
+        if (gVisible) {
+            draw_list_scene();
+            ui_message(UI_MSG_INFO, "Turning off", body, "Keep it on (B)");
+            ui_end_frame();
+        }
+    }
+    return false;
+}
+
 static void run_queue(const Config *cfg)
 {
     int total = gQueueCount, done = 0, failed = 0, n = 0;
     bool paused = false;
     char failNames[300] = "", firstErr[400] = "";
+
+    /* sizes of the queued games, for "time left" (a quick question to the server for each) */
+    gBatchSizesKnown = true;
+    for (int i = 0; i < gQueueCount && !gQuit; i++) {
+        Entry *q = &entries[gQueue[i]];
+        if (!q->remoteSize) {
+            UiProgress p = {0};
+            p.stages[0] = "Preparing";
+            p.stageCount = 1;
+            p.title = "Getting the queue ready";
+            p.detail = q->display[0] ? q->display : q->link.name;
+            p.done = (uint64_t)i;
+            p.total = (uint64_t)gQueueCount;
+            pump();
+            show_progress(&p);
+            q->remoteSize = net_fetch_size(cfg, q->link.url);
+        }
+        if (!q->remoteSize) gBatchSizesKnown = false;
+    }
+
     gBatch = true;
+    gBatchTotal = total;
     while (gQueueCount > 0 && !gQuit) {
         int idx = gQueue[0];
         n++;
-        snprintf(gBatchNote, sizeof(gBatchNote), "Queue: game %d of %d  -  B pauses the queue (progress is kept)", n, total);
+        gBatchIndex = n;
+        gBatchAfter = 0;
+        for (int i = 1; i < gQueueCount; i++) gBatchAfter += entries[gQueue[i]].remoteSize;
+        batch_note(0, 0, 0);
         gBatchErr[0] = '\0';
         int r = download_entry(cfg, &entries[idx]);
         if (r == 1 || gQuit) {
@@ -2952,12 +3109,278 @@ static void run_queue(const Config *cfg)
     if (failed) m += snprintf(msg + m, sizeof(msg) - m, "\nFailed (%d): %s\n%s", failed, failNames, firstErr);
     if (paused) snprintf(msg + m, sizeof(msg) - m, "\nPaused with %d left in the queue. Choose Download the queue in "
                                                   "the + menu to carry on.", gQueueCount);
+    if (!paused) chime();
+    if (!paused && gQueueOff && power_off_countdown()) {
+        save_state();
+        OSShutdown();
+        return;
+    }
     message_box(failed ? UI_MSG_ERROR : paused ? UI_MSG_INFO : UI_MSG_OK,
                 paused ? "Queue paused" : failed ? "Queue finished, with problems" : "Queue finished", msg);
 }
 
+/* ------------------------------------------------------------------ SD card manager */
+
+/* Every installed game on the SD card, whoever put it there: sd:/wbfs/<folder>/<ID>.wbfs (+ .wbf1...)
+   and sd:/games/<folder>/game.iso (+ disc2.iso). */
+typedef struct {
+    char folder[256];
+    char id[7];
+    char title[128];
+    char subtitle[200];
+    bool gc;
+    int discs;
+    uint64_t bytes;
+    SDL_Texture *cover;
+} SdGame;
+
+static SdGame *gSd;
+static int gSdCount;
+
+static bool is_wbfs_part(const char *name)
+{
+    size_t n = strlen(name);
+    if (n < 6) return false;
+    const char *ext = strrchr(name, '.');
+    if (!ext) return false;
+    if (!strcasecmp(ext, ".wbfs")) return true;
+    return strlen(ext) == 5 && !strncasecmp(ext, ".wbf", 4) && ext[4] >= '1' && ext[4] <= '9';
+}
+
+static bool is_gc_file(const char *name)
+{
+    return !strcasecmp(name, "game.iso") || !strcasecmp(name, "disc2.iso") || !strcasecmp(name, "game.ciso") ||
+           !strcasecmp(name, "game.gcm");
+}
+
+static uint64_t file_size(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 ? (uint64_t)st.st_size : 0;
+}
+
+/* "Mario Kart Wii [RMCE01]" -> title "Mario Kart Wii", ID "RMCE01" */
+static void split_folder(const char *folder, char *title, size_t tn, char id[7])
+{
+    snprintf(title, tn, "%.127s", folder);
+    id[0] = '\0';
+    char *b = strrchr(title, '[');
+    if (b && strlen(b) == 8 && b[7] == ']' && valid_id(b + 1)) {
+        snprintf(id, 7, "%.6s", b + 1);
+        *b = '\0';
+        size_t n = strlen(title);
+        while (n > 0 && title[n - 1] == ' ') title[--n] = '\0';
+        if (!title[0]) snprintf(title, tn, "%s", id);
+    }
+}
+
+static int cmp_sd(const void *a, const void *b)
+{
+    return strcasecmp(((const SdGame *)a)->title, ((const SdGame *)b)->title);
+}
+
+static void sd_free(void)
+{
+    for (int i = 0; i < gSdCount; i++)
+        if (gSd[i].cover) SDL_DestroyTexture(gSd[i].cover);
+    free(gSd);
+    gSd = NULL;
+    gSdCount = 0;
+}
+
+static void sd_scan(void)
+{
+    sd_free();
+    int cap = 0;
+    for (int pass = 0; pass < 2; pass++) {
+        bool gc = pass == 1;
+        char root[300];
+        snprintf(root, sizeof(root), SD_ROOT "/%s", gc ? "games" : "wbfs");
+        DIR *d = opendir(root);
+        if (!d) continue;
+        struct dirent *de;
+        while ((de = readdir(d)) != NULL) {
+            if (de->d_name[0] == '.') continue;
+            char dir[600];
+            snprintf(dir, sizeof(dir), "%s/%s", root, de->d_name);
+            DIR *g = opendir(dir);
+            if (!g) continue; /* a file, not a game folder */
+            SdGame s;
+            memset(&s, 0, sizeof(s));
+            s.gc = gc;
+            snprintf(s.folder, sizeof(s.folder), "%s", de->d_name);
+            split_folder(de->d_name, s.title, sizeof(s.title), s.id);
+            struct dirent *fe;
+            int files = 0;
+            while ((fe = readdir(g)) != NULL) {
+                if (!(gc ? is_gc_file(fe->d_name) : is_wbfs_part(fe->d_name))) continue;
+                char path[900];
+                snprintf(path, sizeof(path), "%s/%s", dir, fe->d_name);
+                s.bytes += file_size(path);
+                files++;
+                if (gc && !strcasecmp(fe->d_name, "disc2.iso")) s.discs = 2;
+                if (!gc && !s.id[0] && strlen(fe->d_name) == 11 && !strcasecmp(fe->d_name + 6, ".wbfs") &&
+                    valid_id(fe->d_name))
+                    snprintf(s.id, sizeof(s.id), "%.6s", fe->d_name);
+            }
+            closedir(g);
+            if (!files) continue; /* not a game folder (or an empty one) */
+            if (gc && !s.id[0]) { /* GameCube folders without "[ID]": read it from the disc */
+                char path[700];
+                snprintf(path, sizeof(path), "%s/game.iso", dir);
+                DiscInfo info;
+                if (disc_identify_file(path, &info) != DISC_UNKNOWN) snprintf(s.id, sizeof(s.id), "%s", info.id);
+            }
+            char sz[24];
+            fmt_size(sz, sizeof(sz), s.bytes);
+            snprintf(s.subtitle, sizeof(s.subtitle), "%s%s%s  -  %s%s", s.id, s.id[0] ? "  -  " : "",
+                     gc ? "GameCube" : "Wii", sz, s.discs == 2 ? "  -  2 discs" : "");
+            if (gSdCount == cap) {
+                cap = cap ? cap * 2 : 32;
+                SdGame *n = realloc(gSd, (size_t)cap * sizeof(SdGame));
+                if (!n) break;
+                gSd = n;
+            }
+            gSd[gSdCount++] = s;
+        }
+        closedir(d);
+    }
+    if (gSdCount > 1) qsort(gSd, (size_t)gSdCount, sizeof(SdGame), cmp_sd);
+}
+
+/* delete one game's files (only game files: covers or saves a loader put in the folder stay) */
+static void sd_delete(const SdGame *s)
+{
+    char dir[600];
+    snprintf(dir, sizeof(dir), SD_ROOT "/%s/%s", s->gc ? "games" : "wbfs", s->folder);
+    DIR *g = opendir(dir);
+    if (g) {
+        struct dirent *fe;
+        char names[16][256];
+        int n = 0;
+        while ((fe = readdir(g)) != NULL && n < 16)
+            if (s->gc ? is_gc_file(fe->d_name) : is_wbfs_part(fe->d_name)) snprintf(names[n++], 256, "%s", fe->d_name);
+        closedir(g);
+        for (int i = 0; i < n; i++) {
+            char path[900];
+            snprintf(path, sizeof(path), "%s/%.255s", dir, names[i]);
+            remove(path);
+        }
+    }
+    rmdir(dir); /* only goes if nothing else is left in it */
+    /* links that pointed at it aren't installed any more */
+    bool changed = false;
+    for (int i = 0; i < entryCount; i++) {
+        Entry *e = &entries[i];
+        if (e->folder[0] && e->gc == s->gc && !strcmp(e->folder, s->folder)) {
+            e->folder[0] = '\0';
+            e->id[0] = '\0';
+            refresh_status(e);
+            changed = true;
+        }
+    }
+    if (changed) {
+        save_installed();
+        rebuild_items();
+    }
+    update_sd_text();
+}
+
+static void storage_screen(void)
+{
+    sd_scan();
+    int sel = 0;
+    bool confirm = false;
+    UiItem *list = NULL;
+    while (!gQuit) {
+        pump();
+        Input in = read_input();
+        if (confirm) {
+            if (in.pressed & VPAD_BUTTON_A) {
+                sd_delete(&gSd[sel]);
+                sd_scan();
+                if (sel >= gSdCount) sel = gSdCount - 1;
+                if (sel < 0) sel = 0;
+                confirm = false;
+            } else if (in.pressed & VPAD_BUTTON_B) {
+                confirm = false;
+            }
+        } else {
+            if (in.pressed & (VPAD_BUTTON_B | VPAD_BUTTON_PLUS)) break;
+            if (gSdCount > 0) {
+                if (in.pressed & VPAD_BUTTON_DOWN) sel++;
+                if (in.pressed & VPAD_BUTTON_UP) sel--;
+                if (in.pressed & VPAD_BUTTON_RIGHT) sel += 4;
+                if (in.pressed & VPAD_BUTTON_LEFT) sel -= 4;
+                if (sel >= gSdCount) sel = gSdCount - 1;
+                if (sel < 0) sel = 0;
+                if (in.tap) {
+                    int hit = ui_hit_item(in.tapX, in.tapY, gSdCount);
+                    if (hit >= 0) sel = hit;
+                }
+                if (in.pressed & (VPAD_BUTTON_MINUS | VPAD_BUTTON_A)) confirm = true;
+            }
+        }
+        if (!gVisible) continue;
+
+        /* covers for the games near the selection (from the cover cache only) */
+        for (int i = 0; i < gSdCount; i++) {
+            SdGame *s = &gSd[i];
+            bool near = abs(i - sel) <= 6;
+            if (near && !s->cover && s->id[0] && covers_have(s->id)) {
+                char path[300];
+                covers_path(s->id, path, sizeof(path));
+                SDL_Surface *surf = IMG_Load(path);
+                if (surf) {
+                    s->cover = SDL_CreateTextureFromSurface(gRenderer, surf);
+                    SDL_FreeSurface(surf);
+                }
+            } else if (!near && s->cover && abs(i - sel) > 20) {
+                SDL_DestroyTexture(s->cover);
+                s->cover = NULL;
+            }
+        }
+        free(list);
+        list = gSdCount ? calloc((size_t)gSdCount, sizeof(UiItem)) : NULL;
+        uint64_t used = 0;
+        for (int i = 0; i < gSdCount && list; i++) {
+            list[i].title = gSd[i].title;
+            list[i].subtitle = gSd[i].subtitle;
+            list[i].kind = gSd[i].gc ? UI_KIND_GC : UI_KIND_WII;
+            list[i].status = UI_ST_INSTALLED;
+            list[i].cover = gSd[i].cover;
+            used += gSd[i].bytes;
+        }
+        ui_begin_frame(now_s());
+        ui_header(gSdText, gMusicState);
+        if (gSdCount == 0) {
+            ui_empty("No games on the SD card", "Nothing in sd:/wbfs or sd:/games yet.", NULL);
+            UiHint h[1] = {{"B", "Back"}};
+            ui_footer(h, 1, NULL);
+        } else {
+            ui_list(list, gSdCount, sel);
+            char right[64], u[24];
+            fmt_size(u, sizeof(u), used);
+            snprintf(right, sizeof(right), "%d game%s, %s    %d / %d", gSdCount, gSdCount == 1 ? "" : "s", u, sel + 1,
+                     gSdCount);
+            UiHint h[2] = {{"-", "Delete"}, {"B", "Back"}};
+            ui_footer(h, 2, right);
+        }
+        if (confirm && gSdCount > 0) {
+            char body[700], sz[24];
+            fmt_size(sz, sizeof(sz), gSd[sel].bytes);
+            snprintf(body, sizeof(body), "This deletes %s (%s) from sd:/%s/%s. It can't be undone.", gSd[sel].title, sz,
+                     gSd[sel].gc ? "games" : "wbfs", gSd[sel].folder);
+            ui_confirm("Delete this game?", body, "Delete");
+        }
+        ui_end_frame();
+    }
+    free(list);
+    sd_free();
+}
+
 /* + menu. Returns MENU_* */
-enum { MENU_NONE, MENU_EXIT, MENU_QUEUE, MENU_RELOAD };
+enum { MENU_NONE, MENU_EXIT, MENU_QUEUE, MENU_RELOAD, MENU_STORAGE };
 
 static void reapply_view(void)
 {
@@ -2972,7 +3395,8 @@ static int menu_screen(void)
 {
     static const char *sorts[] = {"List order", "A-Z", "Installed first"};
     static const char *shows[] = {"All games", "Starred", "Installed", "Not installed", "Queued"};
-    enum { M_QUEUE, M_CLEAR, M_SORT, M_SHOW, M_ONLY, M_DUPES, M_REGION, M_MUSIC, M_RELOAD, M_EXIT, M_N };
+    enum { M_QUEUE, M_CLEAR, M_QOFF, M_SORT, M_SHOW, M_ONLY, M_DUPES, M_REGION, M_SD, M_MUSIC, M_CHIME, M_RELOAD, M_EXIT,
+           M_N };
     int sel = gQueueCount ? M_QUEUE : M_SORT;
     while (!gQuit) {
         pump();
@@ -2982,13 +3406,16 @@ static int menu_screen(void)
         UiMenuItem it[M_N] = {
             {"Download the queue", qv, false, gQueueCount == 0},
             {"Clear the queue", NULL, true, gQueueCount == 0},
+            {"When the queue is done", gQueueOff ? "Turn off the Wii U" : "Stay on", false, false},
             {"Sort", sorts[gSort], false, false},
             {"Show", shows[gShow], false, false},
             {"Regions", gRegionOnly == 'E' ? "USA only" : gRegionOnly == 'P' ? "Europe only" : gRegionOnly == 'J' ? "Japan only"
                                                                                                           : "All regions", false, false},
             {"Region duplicates", gHideDupes ? "Hidden" : "Shown", false, false},
             {"Preferred region", gRegionPref == 'P' ? "Europe" : gRegionPref == 'J' ? "Japan" : "USA", false, false},
+            {"SD card: installed games", gSdText[0] ? gSdText : NULL, false, false},
             {"Music", gMusicState == 1 ? "On" : "Off", false, gMusicState < 0},
+            {"Sounds", gChimeOn ? "On" : "Off", false, !gChime},
             {"Reload the list", NULL, false, false},
             {"Exit WiiDrop", NULL, true, false},
         };
@@ -3038,7 +3465,14 @@ static int menu_screen(void)
                 break;
             }
             case M_MUSIC: music_toggle(); save_state(); break;
+            case M_QOFF: gQueueOff = !gQueueOff; save_state(); break;
+            case M_CHIME:
+                gChimeOn = !gChimeOn;
+                save_state();
+                chime();
+                break;
             case M_RELOAD: if (activate) return MENU_RELOAD; break;
+            case M_SD: if (activate) return MENU_STORAGE; break;
             case M_EXIT: if (activate) return MENU_EXIT; break;
             }
         }
@@ -3048,6 +3482,309 @@ static int menu_screen(void)
         ui_end_frame();
     }
     return MENU_NONE;
+}
+
+/* ------------------------------------------------------------------ self-update */
+
+/* New versions come from this GitHub repository's releases (it has to be public). */
+#define UPDATE_REPO "Jasifryx/wiidrop"
+
+typedef struct {
+    char tag[40];
+    char url[600];
+    char sha256[65]; /* lowercase hex, "" if GitHub didn't give one */
+    uint64_t size;
+} UpdateInfo;
+
+static UpdateInfo gUpd;
+static SDL_atomic_t gUpdState; /* 0 not checked, 1 checking, 2 a newer version is available, 3 nothing */
+static Config gUpdCfg;
+
+/* "v1.0.0-beta.3" -> {1, 0, 0, rank, n}: rank 9 = final, 3 = rc, 2 = beta, 1 = alpha */
+static void parse_version(const char *v, int out[5])
+{
+    memset(out, 0, 5 * sizeof(int));
+    if (*v == 'v' || *v == 'V') v++;
+    sscanf(v, "%d.%d.%d", &out[0], &out[1], &out[2]);
+    const char *dash = strchr(v, '-');
+    out[3] = 9;
+    if (dash) {
+        dash++;
+        out[3] = !strncasecmp(dash, "rc", 2) ? 3 : !strncasecmp(dash, "beta", 4) ? 2 : !strncasecmp(dash, "alpha", 5) ? 1 : 0;
+        const char *num = dash + strcspn(dash, "0123456789");
+        out[4] = atoi(num);
+    }
+}
+
+static int version_cmp(const char *a, const char *b)
+{
+    int x[5], y[5];
+    parse_version(a, x);
+    parse_version(b, y);
+    for (int i = 0; i < 5; i++)
+        if (x[i] != y[i]) return x[i] < y[i] ? -1 : 1;
+    return 0;
+}
+
+/* Value of "key" (a string or a bare literal) in JSON text between p and end. Returns where it ended, or NULL. */
+static const char *json_value(const char *p, const char *end, const char *key, char *out, size_t n)
+{
+    char pat[48];
+    snprintf(pat, sizeof(pat), "\"%s\"", key);
+    size_t pl = strlen(pat);
+    for (; p && p + pl < end; p++) {
+        if (memcmp(p, pat, pl)) continue;
+        const char *q = p + pl;
+        while (q < end && (*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t')) q++;
+        if (q >= end || *q != ':') continue;
+        q++;
+        while (q < end && (*q == ' ' || *q == '\n' || *q == '\r' || *q == '\t')) q++;
+        size_t j = 0;
+        if (q < end && *q == '"') {
+            for (q++; q < end && *q != '"'; q++) {
+                if (*q == '\\' && q + 1 < end) q++;
+                if (j + 1 < n) out[j++] = *q;
+            }
+        } else {
+            for (; q < end && *q != ',' && *q != '}' && *q != ']' && *q != ' '; q++)
+                if (j + 1 < n) out[j++] = *q;
+        }
+        out[j] = '\0';
+        return q;
+    }
+    return NULL;
+}
+
+static int update_worker(void *ud)
+{
+    (void)ud;
+    char url[200], err[256];
+    snprintf(url, sizeof(url), "https://api.github.com/repos/%s/releases?per_page=20", UPDATE_REPO);
+    char *json = net_fetch_text(&gUpdCfg, url, err, sizeof(err));
+    int found = 0;
+    if (json) {
+        int cur[5];
+        parse_version(WIIDROP_VERSION, cur);
+        bool allowPre = cur[3] != 9; /* betas update to newer betas; finals only to finals */
+        const char *end = json + strlen(json);
+        UpdateInfo best;
+        memset(&best, 0, sizeof(best));
+        snprintf(best.tag, sizeof(best.tag), "%s", WIIDROP_VERSION);
+        /* one release per "tag_name"; its prerelease flag and assets follow it */
+        const char *p = strstr(json, "\"tag_name\"");
+        while (p) {
+            const char *next = strstr(p + 10, "\"tag_name\"");
+            const char *segEnd = next ? next : end;
+            UpdateInfo u;
+            memset(&u, 0, sizeof(u));
+            char pre[8] = "", draft[8] = "";
+            json_value(p, segEnd, "tag_name", u.tag, sizeof(u.tag));
+            json_value(p, segEnd, "prerelease", pre, sizeof(pre));
+            json_value(p, segEnd, "draft", draft, sizeof(draft));
+            /* the wiidrop.wuhb asset: its digest, size and download link come after its name */
+            char name[64];
+            const char *a = p;
+            while ((a = json_value(a, segEnd, "name", name, sizeof(name))) != NULL) {
+                if (strcasecmp(name, "wiidrop.wuhb")) continue;
+                const char *lim = a + 4000 < segEnd ? a + 4000 : segEnd;
+                char dig[80] = "", sz[24] = "";
+                json_value(a, lim, "digest", dig, sizeof(dig));
+                json_value(a, lim, "size", sz, sizeof(sz));
+                json_value(a, lim, "browser_download_url", u.url, sizeof(u.url));
+                if (!strncmp(dig, "sha256:", 7) && strlen(dig + 7) == 64) snprintf(u.sha256, sizeof(u.sha256), "%s", dig + 7);
+                u.size = strtoull(sz, NULL, 10);
+                break;
+            }
+            bool ok = u.url[0] && !strncmp(u.url, "https://", 8) && strcmp(draft, "true") &&
+                      (allowPre || strcmp(pre, "true"));
+            if (ok && version_cmp(u.tag, best.tag) > 0) best = u;
+            p = next;
+        }
+        free(json);
+        if (version_cmp(best.tag, WIIDROP_VERSION) > 0 && best.url[0]) {
+            gUpd = best;
+            found = 1;
+        }
+    }
+    SDL_AtomicSet(&gUpdState, found ? 2 : 3);
+    return 0;
+}
+
+static void update_check_start(const Config *cfg)
+{
+    gUpdCfg = *cfg;
+    gUpdCfg.user[0] = gUpdCfg.password[0] = '\0'; /* your server's login never goes to GitHub */
+    gUpdCfg.ca_file[0] = '\0';                   /* and GitHub is always checked against the built-in list */
+    gUpdCfg.insecure = 0;
+    SDL_AtomicSet(&gUpdState, 1);
+    SDL_Thread *t = SDL_CreateThread(update_worker, "update", NULL);
+    if (t) SDL_DetachThread(t);
+    else SDL_AtomicSet(&gUpdState, 3);
+}
+
+/* where the running WiiDrop lives (the usual places), "" if none of them */
+static void find_own_wuhb(char *out, size_t n)
+{
+    static const char *spots[] = {SD_ROOT "/wiiu/apps/wiidrop.wuhb", SD_ROOT "/wiiu/apps/WiiDrop.wuhb",
+                                  SD_ROOT "/wiiu/apps/wiidrop/wiidrop.wuhb"};
+    out[0] = '\0';
+    for (size_t i = 0; i < sizeof(spots) / sizeof(spots[0]); i++)
+        if (file_exists(spots[i])) {
+            snprintf(out, n, "%s", spots[i]);
+            return;
+        }
+}
+
+typedef struct {
+    FILE *f;
+    uint64_t got;
+    double last;
+    bool failed;
+} UpdDl;
+
+static int upd_begin(void *ud, int resumed, uint64_t length)
+{
+    (void)resumed;
+    (void)length;
+    UpdDl *u = ud;
+    if (u->f) rewind(u->f);
+    u->got = 0;
+    return 0;
+}
+
+static int upd_write(void *ud, const void *data, size_t len)
+{
+    UpdDl *u = ud;
+    if (fwrite(data, 1, len, u->f) != len) {
+        u->failed = true;
+        return -1;
+    }
+    u->got += len;
+    return 0;
+}
+
+static int upd_progress(void *ud, uint64_t done, uint64_t total, uint64_t bps)
+{
+    UpdDl *u = ud;
+    if (now_s() - u->last < PROGRESS_INTERVAL) return 0;
+    u->last = now_s();
+    pump();
+    if (gQuit || (read_input().pressed & VPAD_BUTTON_B)) return 1;
+    UiProgress p = {0};
+    p.stages[0] = "Download";
+    p.stages[1] = "Install";
+    p.stageCount = 2;
+    p.title = "Updating WiiDrop";
+    p.detail = gUpd.tag;
+    p.done = done;
+    p.total = total ? total : gUpd.size;
+    p.bytesPerSec = bps;
+    p.hint = "Cancel";
+    show_progress(&p);
+    return 0;
+}
+
+/* Download, check and install the new version. Returns true if WiiDrop should close now. */
+static bool do_update(void)
+{
+    char target[300], tmp[320], old[320], err[256] = "";
+    find_own_wuhb(target, sizeof(target));
+    if (!target[0]) snprintf(target, sizeof(target), SD_ROOT "/wiiu/apps/wiidrop.wuhb");
+    snprintf(tmp, sizeof(tmp), "%s.new", target);
+    snprintf(old, sizeof(old), "%s.old", target);
+
+    UpdDl u = {0};
+    u.f = fopen(tmp, "wb");
+    if (!u.f) {
+        message_box(UI_MSG_ERROR, "Update failed", "Couldn't write to the SD card.");
+        return false;
+    }
+    transfer_begin();
+    DownloadSink sink = {upd_begin, upd_write, upd_progress, &u};
+    Config one = gUpdCfg;
+    one.connections = 1;
+    int rc = net_download(&one, gUpd.url, 0, &sink, err, sizeof(err));
+    bool closed = fclose(u.f) == 0;
+    transfer_end();
+
+    const char *problem = NULL;
+    char why[300];
+    if (rc == 1) problem = "Cancelled.";
+    else if (rc != 0) problem = err[0] ? err : "The download failed.";
+    else if (!closed || u.failed) problem = "Couldn't write to the SD card.";
+    else if (gUpd.size && u.got != gUpd.size) problem = "The download is incomplete.";
+    if (!problem) { /* it must be a .wuhb, and match GitHub's SHA-256 */
+        FILE *f = fopen(tmp, "rb");
+        uint8_t magic[4] = {0};
+        mbedtls_sha256_context sh;
+        mbedtls_sha256_init(&sh);
+        mbedtls_sha256_starts_ret(&sh, 0);
+        bool first = true;
+        static uint8_t buf[256 * 1024];
+        size_t n;
+        while (f && (n = fread(buf, 1, sizeof(buf), f)) > 0) {
+            if (first && n >= 4) memcpy(magic, buf, 4);
+            first = false;
+            mbedtls_sha256_update_ret(&sh, buf, n);
+        }
+        if (f) fclose(f);
+        uint8_t dg[32];
+        mbedtls_sha256_finish_ret(&sh, dg);
+        char hex[65];
+        for (int i = 0; i < 32; i++) snprintf(hex + i * 2, 3, "%02x", dg[i]);
+        if (memcmp(magic, "WUHB", 4)) problem = "That isn't a WiiDrop .wuhb file.";
+        else if (gUpd.sha256[0] && strcmp(hex, gUpd.sha256)) problem = "The download doesn't match GitHub's checksum.";
+    }
+    if (problem) {
+        remove(tmp);
+        snprintf(why, sizeof(why), "%.250s Your current WiiDrop is unchanged.", problem);
+        message_box(rc == 1 ? UI_MSG_INFO : UI_MSG_ERROR, rc == 1 ? "Update cancelled" : "Update failed", why);
+        return false;
+    }
+
+    /* swap it in: replace the old file (or move it aside first) */
+    bool swapped = false;
+    if (!file_exists(target) || remove(target) == 0) swapped = rename(tmp, target) == 0;
+    if (!swapped) {
+        remove(old);
+        if (rename(target, old) == 0 && rename(tmp, target) == 0) {
+            swapped = true;
+            remove(old);
+        }
+    }
+    char msg[600];
+    if (!swapped) {
+        snprintf(msg, sizeof(msg), "The new version was downloaded to %.200s.new but couldn't replace the running app. On a PC, "
+                 "delete the old .wuhb and remove \".new\" from the new one's name.", target + strlen(SD_ROOT));
+        message_box(UI_MSG_ERROR, "Almost updated", msg);
+        return false;
+    }
+    snprintf(msg, sizeof(msg), "WiiDrop %.39s is installed. WiiDrop closes now: start it again from the Wii U Menu.",
+             gUpd.tag[0] == 'v' ? gUpd.tag + 1 : gUpd.tag);
+    message_box(UI_MSG_OK, "Updated!", msg);
+    return true;
+}
+
+/* Ask once, when the check has found something. Returns true if WiiDrop should close (updated). */
+static bool update_offer(void)
+{
+    if (SDL_AtomicGet(&gUpdState) != 2) return false;
+    SDL_AtomicSet(&gUpdState, 3); /* only ask once per start */
+    char body[300];
+    snprintf(body, sizeof(body), "A new version of WiiDrop is out: %.39s (you have %s).%s Update now?",
+             gUpd.tag[0] == 'v' ? gUpd.tag + 1 : gUpd.tag, WIIDROP_VERSION,
+             gUpd.sha256[0] ? " It's checked against GitHub's checksum before it's installed." : "");
+    while (!gQuit) {
+        pump();
+        Input in = read_input();
+        if (in.pressed & VPAD_BUTTON_A) return do_update();
+        if (in.pressed & VPAD_BUTTON_B) return false;
+        if (!gVisible) continue;
+        draw_list_scene();
+        ui_confirm("Update available", body, "Update");
+        ui_end_frame();
+    }
+    return false;
 }
 
 /* ------------------------------------------------------------------ main */
@@ -3084,6 +3821,7 @@ int main(int argc, char **argv)
     int musicOn = cfg.music != 0;
     load_state(&musicOn);
     music_init(musicOn != 0);
+    chime_init();
     KPADInit();
     WPADEnableURCC(TRUE); /* Pro Controllers */
     update_sd_text();
@@ -3099,11 +3837,17 @@ int main(int argc, char **argv)
                     "Created sd:/wiiu/apps/wiidrop/links.txt. Put the SD card in your PC, add one direct download "
                     "link per line, then choose Reload in the + menu.");
     if (gListNote[0]) message_box(UI_MSG_INFO, "Using a saved list", gListNote);
+    if (netOk && cfg.update_check) update_check_start(&cfg);
 
     double exitStart = -1;
     while (!gQuit) {
         pump();
         cover_window_update();
+        if (exitStart < 0 && update_offer()) { /* updated: close so the new version can start */
+            exitStart = now_s();
+            gMusicTarget = 0;
+            if (gMusic) Mix_FadeOutMusic(400);
+        }
         Input in = read_input();
 
         if (exitStart < 0) {
@@ -3120,6 +3864,9 @@ int main(int argc, char **argv)
                     if (gListNote[0]) message_box(UI_MSG_INFO, "Using a saved list", gListNote);
                 } else if (m == MENU_QUEUE && netOk) {
                     run_queue(&cfg);
+                } else if (m == MENU_STORAGE) {
+                    storage_screen();
+                    reapply_view();
                 }
                 continue;
             }
@@ -3145,8 +3892,17 @@ int main(int argc, char **argv)
                 if (in.pressed & VPAD_BUTTON_LEFT) gSel -= page;
                 if (in.pressed & VPAD_BUTTON_ZR) gSel += 100;
                 if (in.pressed & VPAD_BUTTON_ZL) gSel -= 100;
-                if (in.pressed & VPAD_BUTTON_R) gSel = letter_jump(gSel, 1);
-                if (in.pressed & VPAD_BUTTON_L) gSel = letter_jump(gSel, -1);
+                if (gShow == SHOW_QUEUED) { /* the Queued view is the queue: L / R move the game */
+                    int qe = cur_entry();
+                    if (qe >= 0 && (in.pressed & (VPAD_BUTTON_L | VPAD_BUTTON_R))) {
+                        queue_move(qe, (in.pressed & VPAD_BUTTON_L) ? -1 : 1);
+                        rebuild_items();
+                        reapply_view();
+                    }
+                } else {
+                    if (in.pressed & VPAD_BUTTON_R) gSel = letter_jump(gSel, 1);
+                    if (in.pressed & VPAD_BUTTON_L) gSel = letter_jump(gSel, -1);
+                }
                 if (gSel < 0) gSel = 0;
                 if (gSel >= gViewCount) gSel = gViewCount - 1;
 

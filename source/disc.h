@@ -17,6 +17,7 @@ typedef struct {
     DiscKind kind;
     char id[7];     /* e.g. "RMCE01" */
     char title[65]; /* printable ASCII, trimmed */
+    int disc;       /* 0 = disc 1, 1 = disc 2 (two-disc GameCube games share one ID) */
 } DiscInfo;
 
 /* Identify a disc image from its first bytes. len should be >= DISC_HEADER_NEED. */

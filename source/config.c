@@ -31,7 +31,10 @@ static const char *CONFIG_TEMPLATE =
     "links_url =\n"
     "\n"
     "# Preferred region when 'Hide region duplicates' is on: USA, Europe or Japan.\n"
-    "region = USA\n";
+    "region = USA\n"
+    "\n"
+    "# Look for a new version of WiiDrop on GitHub when it starts (it always asks before updating).\n"
+    "update_check = 1\n";
 
 static const char *LINKS_TEMPLATE =
     "# WiiDrop links - one direct download link per line.\n"
@@ -67,6 +70,7 @@ void config_load(const char *path, Config *cfg)
     cfg->insecure = 0; /* certificates are checked against the built-in list (data/cacert.pem) */
     cfg->music = 1;
     cfg->connections = 4;
+    cfg->update_check = 1;
     snprintf(cfg->region, sizeof(cfg->region), "USA");
 
     FILE *f = fopen(path, "r");
@@ -96,6 +100,7 @@ void config_load(const char *path, Config *cfg)
             if (cfg->connections > 8) cfg->connections = 8;
         } else if (!strcmp(key, "links_url")) snprintf(cfg->links_url, sizeof(cfg->links_url), "%s", val);
         else if (!strcmp(key, "region") && *val) snprintf(cfg->region, sizeof(cfg->region), "%s", val);
+        else if (!strcmp(key, "update_check")) cfg->update_check = atoi(val) != 0;
     }
     fclose(f);
 }

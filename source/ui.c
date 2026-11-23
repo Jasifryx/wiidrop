@@ -1058,14 +1058,14 @@ void ui_details(const UiDetails *d)
 /* ------------------------------------------------------------------ menu */
 
 #define MENU_W   720
-#define MENU_ROW 52
 
-static float menuY0;
+static float menuY0, menuRow = 52;
 
 void ui_menu(const char *title, const UiMenuItem *items, int count, int sel)
 {
     fill_rect(0, 0, UI_W, UI_H, RGBA(4, 6, 18, 175));
-    float h = 96 + count * MENU_ROW + 70;
+    menuRow = count > 0 && (UI_H - 40 - 166) / (float)count < 52 ? (UI_H - 40 - 166) / (float)count : 52;
+    float h = 96 + count * menuRow + 70;
     float x0 = (UI_W - MENU_W) / 2.0f, y0 = (UI_H - h) / 2.0f;
     shadow(x0 + 14, y0 + 14, MENU_W - 28, h - 28, 58, RGBA(0, 0, 0, 170));
     fill_rrect(x0, y0, MENU_W, h, 28, RGBA(20, 26, 54, 250));
@@ -1073,9 +1073,9 @@ void ui_menu(const char *title, const UiMenuItem *items, int count, int sel)
     text(F_L, title, UI_W / 2.0f, y0 + 26, C_TEXT, AL_CENTER, 0);
     menuY0 = y0 + 96;
     for (int i = 0; i < count; i++) {
-        float ry = menuY0 + i * MENU_ROW, cy = ry + MENU_ROW / 2.0f;
+        float ry = menuY0 + i * menuRow, cy = ry + menuRow / 2.0f;
         if (i == sel) {
-            fill_rrect_hgrad(x0 + 24, ry + 2, MENU_W - 48, MENU_ROW - 4, 16, alpha(C_ACCENT, 90), alpha(C_ACCENT2, 90));
+            fill_rrect_hgrad(x0 + 24, ry + 2, MENU_W - 48, menuRow - 4, 16, alpha(C_ACCENT, 90), alpha(C_ACCENT2, 90));
         }
         Col lc = items[i].disabled ? C_MUTED : items[i].danger ? C_RED : C_TEXT;
         text(F_M, items[i].label, x0 + 48, cy - font_h(F_M) / 2.0f, lc, AL_LEFT, MENU_W - 320);
@@ -1100,6 +1100,6 @@ int ui_menu_hit(int x, int y, int count)
 {
     float x0 = (UI_W - MENU_W) / 2.0f;
     if (x < x0 || x > x0 + MENU_W || y < menuY0) return -1;
-    int i = (int)((y - menuY0) / MENU_ROW);
+    int i = (int)((y - menuY0) / menuRow);
     return i < count ? i : -1;
 }

@@ -7,7 +7,7 @@ onto the SD card, ready for vWii loaders. No PC or server program needed: the co
 |-----------------------|--------------------------------------------------------|-------------------------|
 | a Wii `.wbfs`         | `sd:/wbfs/<Title> [ID]/ID.wbfs` (+ `.wbf1`… if > 4 GB) | USB Loader GX / WiiFlow |
 | a Wii `.iso`          | same, **converted to WBFS while it downloads**         | USB Loader GX / WiiFlow |
-| a GameCube `.iso`     | `sd:/games/<Title> [ID]/game.iso`                      | Nintendont              |
+| a GameCube `.iso`     | `sd:/games/<Title> [ID]/game.iso` (disc 2: `disc2.iso`) | Nintendont             |
 | a Wii or GameCube `.rvz` (Dolphin) | same as above: rebuilt, then WBFS (Wii) or ISO (GC) | |
 | a `.7z` or `.zip` with any of these | same as above (only the game is extracted)             |                         |
 
@@ -47,8 +47,16 @@ Features
 - **Game details:** cover, game ID, type, region, size, where it's installed, and actions (install, queue, star,
   delete).
 - **Download queue:** queue games with **Y**, then *Download the queue* in the **+** menu installs them one
-  after another. Problems are collected into one summary at the end; B pauses the queue. Kept across restarts.
+  after another, with the time left for the whole queue. Problems are collected into one summary at the end; B
+  pauses the queue. Kept across restarts. With *Show: Queued*, the list is the queue and **L/R** move the selected
+  game up or down. Optional: turn the Wii U off when the queue is done (+ menu), and a chime when a download or
+  the queue finishes (*Sounds*).
+- **Two-disc GameCube games:** disc 2 goes next to disc 1 as `disc2.iso`, the way Nintendont expects.
 - **Manage games:** delete an installed game, or discard a partial download, from its details screen (**-**).
+  *SD card: installed games* in the + menu lists every Wii and GameCube game on the card (also ones copied
+  over from a PC) with its size and the space left, and deletes any of them.
+- **Updates:** at start WiiDrop looks for a newer release on GitHub and asks before updating. The download is
+  checked against GitHub's SHA-256 before it replaces the app. Turn it off with `update_check = 0`.
 - **Sort, filter, star:** sort by list order / A-Z / installed first; show all, starred, installed, not
   installed or queued games; show only one region (USA / Europe / Japan, from the name's Redump tags or the
   game ID; games whose region can't be told stay visible); hide region duplicates (keeps the installed copy,
@@ -110,7 +118,7 @@ The Wii U Menu icon is `meta/icon.png` (redraw it with `python tools/make_icon.p
    | **-** | search (Wii U keyboard; every word must match, e.g. `mario usa`) | delete the game / discard a partial download |
    | **B** | clear the search | back |
    | **+** | menu: download the queue, sort, show, region duplicates, music, reload, exit | |
-   | **L/R**, **ZL/ZR** | previous/next letter, 100 titles up/down | |
+   | **L/R**, **ZL/ZR** | previous/next letter, 100 titles up/down (in *Show: Queued*, L/R move the game in the queue) | |
 
    During a download **B** pauses (progress is kept). HOME is disabled only while a download is running.
    Wii Remote: 1 = X, 2 = Y. Classic / Pro Controller buttons work like the GamePad's.
@@ -156,6 +164,7 @@ music = 1       # 0 = start muted
 connections = 4 # parallel connections per download (1-8); 1 for hosts that limit connections
 links_url =     # load links.txt from this URL instead (the last copy is kept on the SD card)
 region = USA    # preferred region for "hide region duplicates": USA, Europe or Japan
+update_check = 1 # look for a new WiiDrop on GitHub at start (always asks first)
 ```
 HTTPS certificates are checked against Mozilla's list of trusted authorities, which is built into WiiDrop
 (`data/cacert.pem`, from curl.se). Servers with a normal certificate (Let's Encrypt etc.) just work. For your own

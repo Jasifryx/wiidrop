@@ -25,6 +25,7 @@ static void fill(const uint8_t *hdr, DiscInfo *out)
 {
     memcpy(out->id, hdr, 6);
     out->id[6] = '\0';
+    out->disc = hdr[6] == 1 ? 1 : 0;
     int j = 0;
     for (int i = 0; i < 64 && hdr[0x20 + i]; i++) {
         uint8_t c = hdr[0x20 + i];
