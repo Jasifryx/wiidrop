@@ -10,12 +10,14 @@ the full license texts are in each project's source distribution, linked below.
 | [Mozilla CA certificate list](https://curl.se/docs/caextract.html) (curl's `cacert.pem`), `data/cacert.pem` | checking HTTPS certificates | MPL-2.0 |
 | [LZMA SDK](https://www.7-zip.org/sdk.html) C decoder (7-Zip 26.06), `source/lzma/` | .7z extraction, RVZ/WIA LZMA | Public domain |
 | [Zstandard](https://github.com/facebook/zstd) 1.5.7 decompressor, `source/zstd/` | RVZ Zstandard | BSD-3-Clause (dual-licensed with GPL-2.0) |
+| [FatFs](https://elm-chan.org/fsw/ff/) R0.16 by ChaN, `source/fatfs/` (only `ffconf.h` changed) | FAT32 file system on USB drives | FatFs license (BSD-1-Clause style) |
 
 ## Linked from devkitPro packages
 
 | Component | Use | License |
 |---|---|---|
 | [wut](https://github.com/devkitPro/wut) | Wii U system libraries / runtime | zlib |
+| [libmocha](https://github.com/wiiu-env/libmocha) (commit 50fefdf) | raw access to USB drives through Aroma's Mocha | **LGPL-3.0** |
 | [SDL2](https://www.libsdl.org) | graphics, input, audio, software keyboard | zlib |
 | [SDL2_mixer](https://github.com/libsdl-org/SDL_mixer) | audio playback | zlib |
 | [libmpg123](https://www.mpg123.de) (via SDL2_mixer) | playing a user's own `music.mp3` | **LGPL-2.1** |
@@ -35,13 +37,15 @@ the full license texts are in each project's source distribution, linked below.
 | [bzip2](https://sourceware.org/bzip2/) | RVZ bzip2, FreeType | bzip2 License (BSD-style) |
 
 WiiDrop itself is GPL-3.0-or-later. Every library above can be combined with it: the permissive ones (zlib, MIT,
-BSD, curl, libpng, IJG, bzip2, public domain), Apache-2.0 and the CA list's MPL-2.0 directly; libmpg123's LGPL-2.1 too; Zstandard is used
+BSD, FatFs, curl, libpng, IJG, bzip2, public domain), Apache-2.0 and the CA list's MPL-2.0 directly; libmpg123's
+LGPL-2.1 and libmocha's LGPL-3.0 too; Zstandard is used
 under its BSD-3-Clause option and FreeType under its GPL-2.0-or-later option (FreeType is dual-licensed FTL / GPL).
 
 Portions of this software are copyright © The FreeType Project (https://freetype.org). All rights reserved.
 
-**About the LGPL (libmpg123):** WiiDrop's complete source code and build files are published with each release,
-so anyone can rebuild `wiidrop.wuhb` against a modified libmpg123, as the LGPL-2.1 requires.
+**About the LGPL (libmpg123, libmocha):** WiiDrop's complete source code and build files are published with each
+release, so anyone can rebuild `wiidrop.wuhb` against a modified libmpg123 or libmocha, as the LGPL-2.1 and
+LGPL-3.0 require.
 
 ## Not included
 

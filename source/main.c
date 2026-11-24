@@ -54,6 +54,7 @@
 #include "sevenzip.h"
 #include "splitwriter.h"
 #include "ui.h"
+#include "usbfs.h"
 #include "wbfsconv.h"
 #include "zipstream.h"
 
@@ -70,6 +71,8 @@
 #define QUEUE_PATH     APP_DIR "/queue.txt"
 #define STATE_PATH     APP_DIR "/state.ini"
 #define REMOTE_LINKS   APP_DIR "/links_remote.txt"
+#define USB_ROOT       "usb:"
+#define USB_TMP        USB_ROOT "/wiidrop/tmp"
 #define USBGX_ROOT     SD_ROOT "/apps/usbloader_gx"
 #define USBGX_COVERS   USBGX_ROOT "/images/2D"
 
@@ -77,7 +80,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 #define MUSIC_MAX_VOLUME 84 /* of 128 */
-#define WIIDROP_VERSION  "1.0.0-beta.3"
+#define WIIDROP_VERSION  "1.0.0-beta.4"
 
 /* ------------------------------------------------------------------ app state */
 
@@ -85,9 +88,26 @@ static SDL_Window *gWindow;
 static SDL_Renderer *gRenderer;
 static bool gQuit;           /* SDL_QUIT received (HOME menu -> Close) */
 static bool gVisible = true; /* false while another app/HOME menu owns the screen */
-static char gSdText[32];
+static char gSdText[48];
 static int gSel; /* position in the visible (possibly filtered) list */
 static Config gCfg;
+
+/* where games go: the SD card, or a FAT32 USB drive (usb:/, see usbfs.c). Downloads are staged on the same
+   drive, so finished games are moved into place, never copied. */
+static bool gUseUsb;
+static bool gUsbSeen;            /* a USB drive was used before: mount it at start to see what's on it */
+static char gTmpDir[64] = TMP_DIR;
+static char gStartNote[300];     /* shown once after start (the USB drive couldn't be used) */
+
+static const char *game_root(bool usb)
+{
+    return usb ? USB_ROOT : SD_ROOT;
+}
+
+static const char *drive_prefix(bool usb) /* for messages */
+{
+    return usb ? "usb:" : "sd:";
+}
 static char gListNote[300]; /* shown once after loading (e.g. links_url unreachable) */
 
 /* list options (+ menu), saved in state.ini */
@@ -388,8 +408,9 @@ static void mkdir_p(const char *path)
 {
     char tmp[600];
     snprintf(tmp, sizeof(tmp), "%s", path);
-    /* skip "fs:/vol/external01" so we don't try to create the mount itself */
-    for (char *p = tmp + strlen(SD_ROOT) + 1; *p; p++) {
+    /* skip the drive itself ("fs:/vol/external01" or "usb:") so we don't try to create it */
+    size_t skip = !strncmp(tmp, SD_ROOT, strlen(SD_ROOT)) ? strlen(SD_ROOT) : strchr(tmp, ':') ? (size_t)(strchr(tmp, ':') - tmp + 1) : 0;
+    for (char *p = tmp + skip + 1; *p && p > tmp; p++) {
         if (*p == '/') {
             *p = '\0';
             mkdir(tmp, 0777);
@@ -408,7 +429,7 @@ static bool file_exists(const char *path)
 static uint64_t sd_free_bytes(void)
 {
     struct statvfs v;
-    if (statvfs(SD_ROOT "/", &v) != 0) return 0; /* unknown */
+    if (statvfs(gUseUsb ? USB_ROOT "/" : SD_ROOT "/", &v) != 0) return 0; /* unknown */
     return (uint64_t)v.f_bavail * (uint64_t)v.f_frsize;
 }
 
@@ -421,7 +442,7 @@ static void update_sd_text(void)
     }
     char s[24];
     fmt_size(s, sizeof(s), f);
-    snprintf(gSdText, sizeof(gSdText), "%s free", s);
+    snprintf(gSdText, sizeof(gSdText), "%s%s free", gUseUsb ? "USB: " : "", s);
 }
 
 /* FNV-1a, used to give each link its own staging folder and installed.txt key. */
@@ -450,6 +471,7 @@ typedef struct {
     char id[7];
     char folder[96];
     int disc; /* GameCube disc 2 -> disc2.iso next to game.iso */
+    bool usb; /* installed on the USB drive */
     bool gc;
     bool installed;
     bool partial;
@@ -492,7 +514,7 @@ static void make_folder_name(const char *title, const char *id, char *out, size_
 static void staging_writer(const char *hash, SplitWriter *sw)
 {
     memset(sw, 0, sizeof(*sw));
-    snprintf(sw->base, sizeof(sw->base), TMP_DIR "/%s/dl", hash);
+    snprintf(sw->base, sizeof(sw->base), "%s/%s/dl", gTmpDir, hash);
     sw->ext0 = ".000";
     sw->partfmt = ".%03d";
     sw->split = 1;
@@ -503,7 +525,7 @@ static void staging_writer(const char *hash, SplitWriter *sw)
 static void extract_writer(const char *hash, SplitWriter *sw)
 {
     memset(sw, 0, sizeof(*sw));
-    snprintf(sw->base, sizeof(sw->base), TMP_DIR "/%s/game", hash);
+    snprintf(sw->base, sizeof(sw->base), "%s/%s/game", gTmpDir, hash);
     sw->ext0 = ".wbfs";
     sw->split = 1;
     sw->part_size = WBFS_SPLIT_SIZE;
@@ -527,17 +549,17 @@ static StagedKind staged_kind(const SplitWriter *sw)
     return (k == DISC_WII_WBFS || k == DISC_GC_ISO) ? STAGED_DISC : STAGED_BAD;
 }
 
-static void final_writer(bool gc, int disc, const char *folder, const char *id, SplitWriter *sw)
+static void final_writer(bool usb, bool gc, int disc, const char *folder, const char *id, SplitWriter *sw)
 {
     memset(sw, 0, sizeof(*sw));
     if (gc) {
         /* Nintendont: disc 1 is game.iso, disc 2 is disc2.iso in the same folder */
-        snprintf(sw->base, sizeof(sw->base), SD_ROOT "/games/%s/%s", folder, disc ? "disc2" : "game");
+        snprintf(sw->base, sizeof(sw->base), "%s/games/%s/%s", game_root(usb), folder, disc ? "disc2" : "game");
         sw->ext0 = ".iso";
         sw->split = 0;
         sw->part_size = UINT64_MAX;
     } else {
-        snprintf(sw->base, sizeof(sw->base), SD_ROOT "/wbfs/%s/%s", folder, id);
+        snprintf(sw->base, sizeof(sw->base), "%s/wbfs/%s/%s", game_root(usb), folder, id);
         sw->ext0 = ".wbfs";
         sw->split = 1;
         sw->part_size = WBFS_SPLIT_SIZE;
@@ -553,7 +575,7 @@ static void load_installed(void)
     while (fgets(line, sizeof(line), f)) {
         line[strcspn(line, "\r\n")] = '\0';
         char *f0 = strtok(line, "\t"), *f1 = strtok(NULL, "\t"), *f2 = strtok(NULL, "\t"),
-             *f3 = strtok(NULL, "\t"), *f4 = strtok(NULL, "\t");
+             *f3 = strtok(NULL, "\t"), *f4 = strtok(NULL, "\t"), *f5 = strtok(NULL, "\t");
         if (!f0 || !f1 || !f2 || !f3) continue;
         for (int i = 0; i < entryCount; i++) {
             Entry *e = &entries[i];
@@ -561,7 +583,8 @@ static void load_installed(void)
             e->gc = !strcmp(f1, "gc");
             snprintf(e->id, sizeof(e->id), "%s", f2);
             snprintf(e->folder, sizeof(e->folder), "%s", f3);
-            e->disc = (f4 && !strcmp(f4, "2")) ? 1 : 0;
+            e->disc = ((f4 && !strcmp(f4, "2")) || (f5 && !strcmp(f5, "2"))) ? 1 : 0;
+            e->usb = (f4 && !strcmp(f4, "usb")) || (f5 && !strcmp(f5, "usb"));
         }
     }
     fclose(f);
@@ -574,7 +597,8 @@ static void save_installed(void)
     for (int i = 0; i < entryCount; i++) {
         Entry *e = &entries[i];
         if (e->folder[0])
-            fprintf(f, "%s\t%s\t%s\t%s%s\n", e->hash, e->gc ? "gc" : "wii", e->id, e->folder, e->disc ? "\t2" : "");
+            fprintf(f, "%s\t%s\t%s\t%s%s%s\n", e->hash, e->gc ? "gc" : "wii", e->id, e->folder, e->disc ? "\t2" : "",
+                    e->usb ? "\tusb" : "");
     }
     fclose(f);
 }
@@ -632,7 +656,7 @@ static void scan_tmp_dir(void)
     gTmpSet = NULL;
     gTmpCount = 0;
     int cap = 0;
-    DIR *d = opendir(TMP_DIR);
+    DIR *d = opendir(gTmpDir);
     if (d) {
         struct dirent *de;
         while ((de = readdir(d)) != NULL) {
@@ -662,7 +686,7 @@ static void refresh_status(Entry *e)
     char path[600];
     e->installed = false;
     if (e->folder[0]) {
-        final_writer(e->gc, e->disc, e->folder, e->id, &sw);
+        final_writer(e->usb, e->gc, e->disc, e->folder, e->id, &sw);
         sw_part_path(&sw, 0, path, sizeof(path));
         e->installed = file_exists(path);
     }
@@ -671,9 +695,9 @@ static void refresh_status(Entry *e)
     if (gTmpSetValid && !tmp_has(e->hash)) goto subtitle; /* never started: nothing in tmp */
     staging_writer(e->hash, &sw);
     e->partial = sw_existing_size(&sw) > 0;
-    snprintf(statePath, sizeof(statePath), TMP_DIR "/%s/convert.state", e->hash);
+    snprintf(statePath, sizeof(statePath), "%s/%s/convert.state", gTmpDir, e->hash);
     if (!e->partial && wc_has_state(statePath)) e->partial = true;
-    snprintf(statePath, sizeof(statePath), TMP_DIR "/%s/zip.ckpt", e->hash);
+    snprintf(statePath, sizeof(statePath), "%s/%s/zip.ckpt", gTmpDir, e->hash);
     if (!e->partial && file_exists(statePath)) e->partial = true;
 
 subtitle:;
@@ -1045,6 +1069,7 @@ static void save_state(void)
     fprintf(f, "sort=%d\nshow=%d\ndupes=%d\nregion=%c\nonly=%c\nmusic=%d\nqueueoff=%d\nchime=%d\n", gSort, gShow,
             gHideDupes ? 1 : 0, gRegionPref, gRegionOnly ? gRegionOnly : 'A', gMusicState == 1 ? 1 : 0, gQueueOff ? 1 : 0,
             gChimeOn ? 1 : 0);
+    fprintf(f, "target=%s\nusbseen=%d\n", gUseUsb ? "usb" : "sd", gUsbSeen ? 1 : 0);
     fclose(f);
 }
 
@@ -1066,6 +1091,8 @@ static void load_state(int *music)
         else if (sscanf(line, "only=%c", &c) == 1) gRegionOnly = strchr("EPJ", c) ? c : 0;
         else if (sscanf(line, "queueoff=%d", &v) == 1) gQueueOff = v != 0;
         else if (sscanf(line, "chime=%d", &v) == 1) gChimeOn = v != 0;
+        else if (!strncmp(line, "target=usb", 10)) gUseUsb = true;
+        else if (sscanf(line, "usbseen=%d", &v) == 1) gUsbSeen = v != 0;
         else if (sscanf(line, "music=%d", &v) == 1) *music = v != 0;
     }
     fclose(f);
@@ -1508,7 +1535,7 @@ static const char *kind_error(DiscKind k)
 
 static void conv_state_path(const char *hash, char *out, size_t n)
 {
-    snprintf(out, n, TMP_DIR "/%s/convert.state", hash);
+    snprintf(out, n, "%s/%s/convert.state", gTmpDir, hash);
 }
 
 /* Looks at the first bytes of a stream before anything is written, so we never write gigabytes of
@@ -1709,7 +1736,7 @@ static void gw_discard(GameWriter *g)
 
 static void zip_ckpt_path(const char *hash, char *out, size_t n)
 {
-    snprintf(out, n, TMP_DIR "/%s/zip.ckpt", hash);
+    snprintf(out, n, "%s/%s/zip.ckpt", gTmpDir, hash);
 }
 
 /* ---- checksum of the downloaded file (optional, from links.txt: "Name | URL | md5=...") ---- */
@@ -2089,7 +2116,7 @@ static int extract_archive(Entry *e)
     x.e = e;
     extract_writer(e->hash, &x.sw);
     char statePath[400];
-    snprintf(statePath, sizeof(statePath), TMP_DIR "/%s/extract.state", e->hash);
+    snprintf(statePath, sizeof(statePath), "%s/%s/extract.state", gTmpDir, e->hash);
     wc_init(&x.conv, &x.sw, statePath);
 
     SplitWriter archive;
@@ -2211,7 +2238,7 @@ static int convert_rvz(Entry *e)
     x.gw.hc.allowRvz = false;
     /* Own progress file: convert.state means "an interrupted direct .iso download" to download_entry(),
        which would otherwise mistake a crashed RVZ rebuild for it (and resume the wrong thing). */
-    snprintf(x.gw.conv.statePath, sizeof(x.gw.conv.statePath), TMP_DIR "/%s/rvz.state", e->hash);
+    snprintf(x.gw.conv.statePath, sizeof(x.gw.conv.statePath), "%s/%s/rvz.state", gTmpDir, e->hash);
     SplitRead rd;
     memset(&rd, 0, sizeof(rd));
     staging_writer(e->hash, &rd.sw);
@@ -2279,13 +2306,13 @@ static int finalize(Entry *e, const SplitWriter *from, char *err, size_t errlen)
     if (gc) { /* the other disc of this game is already installed: use its folder, whatever it's called */
         for (int i = 0; i < entryCount; i++) {
             Entry *o = &entries[i];
-            if (o != e && o->gc && o->folder[0] && !strcmp(o->id, info.id) && o->disc != disc) {
+            if (o != e && o->gc && o->folder[0] && o->usb == gUseUsb && !strcmp(o->id, info.id) && o->disc != disc) {
                 snprintf(folder, sizeof(folder), "%s", o->folder);
                 break;
             }
         }
     }
-    final_writer(gc, disc, folder, info.id, &to);
+    final_writer(gUseUsb, gc, disc, folder, info.id, &to);
 
     char dir[600];
     snprintf(dir, sizeof(dir), "%s", to.base);
@@ -2310,6 +2337,7 @@ static int finalize(Entry *e, const SplitWriter *from, char *err, size_t errlen)
 
     e->gc = gc;
     e->disc = disc;
+    e->usb = gUseUsb;
     snprintf(e->id, sizeof(e->id), "%s", info.id);
     snprintf(e->folder, sizeof(e->folder), "%s", folder);
     save_installed();
@@ -2405,7 +2433,7 @@ static int download_entry(const Config *cfg, Entry *e)
     char host[128], file[200];
     url_parts(e->link.url, host, sizeof(host), file, sizeof(file));
     char stage[400];
-    snprintf(stage, sizeof(stage), TMP_DIR "/%s", e->hash);
+    snprintf(stage, sizeof(stage), "%s/%s", gTmpDir, e->hash);
     mkdir_p(stage);
     char readyPath[420];
     snprintf(readyPath, sizeof(readyPath), "%s/rvz.ready", stage);
@@ -2730,8 +2758,8 @@ static int download_entry(const Config *cfg, Entry *e)
     transfer_end();
 
     char msg[460];
-    snprintf(msg, sizeof(msg), "Saved to sd:/%s/%s%s\nLaunch it with %s.%s", e->gc ? "games" : "wbfs", e->folder,
-             e->disc ? "/disc2.iso" : "", e->gc ? "Nintendont" : "USB Loader GX or WiiFlow", sumNote);
+    snprintf(msg, sizeof(msg), "Saved to %s/%s/%s%s\nLaunch it with %s.%s", drive_prefix(e->usb), e->gc ? "games" : "wbfs",
+             e->folder, e->disc ? "/disc2.iso" : "", e->gc ? "Nintendont" : "USB Loader GX or WiiFlow", sumNote);
     if (!gBatch) chime();
     message_box(UI_MSG_OK, "Installed!", msg);
     return 0;
@@ -2748,7 +2776,7 @@ out:
 static void delete_installed(Entry *e)
 {
     SplitWriter sw;
-    final_writer(e->gc, e->disc, e->folder, e->id, &sw);
+    final_writer(e->usb, e->gc, e->disc, e->folder, e->id, &sw);
     sw_remove_all(&sw);
     char dir[600];
     snprintf(dir, sizeof(dir), "%s", sw.base);
@@ -2775,10 +2803,10 @@ static void discard_partial(Entry *e)
     static const char *files[] = {"convert.state", "extract.state", "rvz.state", "zip.ckpt", "rvz.ready"};
     char path[400];
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
-        snprintf(path, sizeof(path), TMP_DIR "/%s/%s", e->hash, files[i]);
+        snprintf(path, sizeof(path), "%s/%s/%s", gTmpDir, e->hash, files[i]);
         remove(path);
     }
-    snprintf(path, sizeof(path), TMP_DIR "/%s", e->hash);
+    snprintf(path, sizeof(path), "%s/%s", gTmpDir, e->hash);
     rmdir(path);
     refresh_status(e);
     rebuild_items();
@@ -2893,7 +2921,8 @@ static void details_screen(const Config *cfg, int idx)
         regions_text(entry_regions(e), regionText, sizeof(regionText));
         if (e->remoteSize) fmt_size(sizeText, sizeof(sizeText), e->remoteSize);
         else snprintf(sizeText, sizeof(sizeText), "%s", job ? "Checking..." : "Unknown");
-        if (e->installed) snprintf(statusText, sizeof(statusText), "sd:/%s/%s", e->gc ? "games" : "wbfs", e->folder);
+        if (e->installed)
+            snprintf(statusText, sizeof(statusText), "%s/%s/%s", drive_prefix(e->usb), e->gc ? "games" : "wbfs", e->folder);
         else if (e->partial) {
             char a[24];
             fmt_size(a, sizeof(a), have);
@@ -2935,8 +2964,8 @@ static void details_screen(const Config *cfg, int idx)
         if (confirm) {
             char body[300];
             if (e->installed)
-                snprintf(body, sizeof(body), "This deletes sd:/%s/%s from the SD card. You can download it again later.",
-                         e->gc ? "games" : "wbfs", e->folder);
+                snprintf(body, sizeof(body), "This deletes %s/%s/%s from the %s. You can download it again later.",
+                         drive_prefix(e->usb), e->gc ? "games" : "wbfs", e->folder, e->usb ? "USB drive" : "SD card");
             else
                 snprintf(body, sizeof(body), "This deletes the partly downloaded files. The download starts over next time.");
             ui_confirm(e->installed ? "Delete this game?" : "Discard the download?", body,
@@ -3129,6 +3158,7 @@ typedef struct {
     char title[128];
     char subtitle[200];
     bool gc;
+    bool usb;
     int discs;
     uint64_t bytes;
     SDL_Texture *cover;
@@ -3192,10 +3222,11 @@ static void sd_scan(void)
 {
     sd_free();
     int cap = 0;
-    for (int pass = 0; pass < 2; pass++) {
-        bool gc = pass == 1;
+    for (int pass = 0; pass < 4; pass++) {
+        bool gc = pass & 1, usb = pass >= 2;
+        if (usb && !usbfs_mounted()) break;
         char root[300];
-        snprintf(root, sizeof(root), SD_ROOT "/%s", gc ? "games" : "wbfs");
+        snprintf(root, sizeof(root), "%s/%s", game_root(usb), gc ? "games" : "wbfs");
         DIR *d = opendir(root);
         if (!d) continue;
         struct dirent *de;
@@ -3208,6 +3239,7 @@ static void sd_scan(void)
             SdGame s;
             memset(&s, 0, sizeof(s));
             s.gc = gc;
+            s.usb = usb;
             snprintf(s.folder, sizeof(s.folder), "%s", de->d_name);
             split_folder(de->d_name, s.title, sizeof(s.title), s.id);
             struct dirent *fe;
@@ -3233,8 +3265,8 @@ static void sd_scan(void)
             }
             char sz[24];
             fmt_size(sz, sizeof(sz), s.bytes);
-            snprintf(s.subtitle, sizeof(s.subtitle), "%s%s%s  -  %s%s", s.id, s.id[0] ? "  -  " : "",
-                     gc ? "GameCube" : "Wii", sz, s.discs == 2 ? "  -  2 discs" : "");
+            snprintf(s.subtitle, sizeof(s.subtitle), "%s%s%s  -  %s%s  -  %s", s.id, s.id[0] ? "  -  " : "",
+                     gc ? "GameCube" : "Wii", sz, s.discs == 2 ? "  -  2 discs" : "", usb ? "USB drive" : "SD card");
             if (gSdCount == cap) {
                 cap = cap ? cap * 2 : 32;
                 SdGame *n = realloc(gSd, (size_t)cap * sizeof(SdGame));
@@ -3252,7 +3284,7 @@ static void sd_scan(void)
 static void sd_delete(const SdGame *s)
 {
     char dir[600];
-    snprintf(dir, sizeof(dir), SD_ROOT "/%s/%s", s->gc ? "games" : "wbfs", s->folder);
+    snprintf(dir, sizeof(dir), "%s/%s/%s", game_root(s->usb), s->gc ? "games" : "wbfs", s->folder);
     DIR *g = opendir(dir);
     if (g) {
         struct dirent *fe;
@@ -3272,7 +3304,7 @@ static void sd_delete(const SdGame *s)
     bool changed = false;
     for (int i = 0; i < entryCount; i++) {
         Entry *e = &entries[i];
-        if (e->folder[0] && e->gc == s->gc && !strcmp(e->folder, s->folder)) {
+        if (e->folder[0] && e->gc == s->gc && e->usb == s->usb && !strcmp(e->folder, s->folder)) {
             e->folder[0] = '\0';
             e->id[0] = '\0';
             refresh_status(e);
@@ -3354,7 +3386,8 @@ static void storage_screen(void)
         ui_begin_frame(now_s());
         ui_header(gSdText, gMusicState);
         if (gSdCount == 0) {
-            ui_empty("No games on the SD card", "Nothing in sd:/wbfs or sd:/games yet.", NULL);
+            ui_empty("No games installed", usbfs_mounted() ? "Nothing in /wbfs or /games on the SD card or the USB drive yet."
+                                                           : "Nothing in sd:/wbfs or sd:/games yet.", NULL);
             UiHint h[1] = {{"B", "Back"}};
             ui_footer(h, 1, NULL);
         } else {
@@ -3369,14 +3402,41 @@ static void storage_screen(void)
         if (confirm && gSdCount > 0) {
             char body[700], sz[24];
             fmt_size(sz, sizeof(sz), gSd[sel].bytes);
-            snprintf(body, sizeof(body), "This deletes %s (%s) from sd:/%s/%s. It can't be undone.", gSd[sel].title, sz,
-                     gSd[sel].gc ? "games" : "wbfs", gSd[sel].folder);
+            snprintf(body, sizeof(body), "This deletes %s (%s) from %s/%s/%s. It can't be undone.", gSd[sel].title, sz,
+                     drive_prefix(gSd[sel].usb), gSd[sel].gc ? "games" : "wbfs", gSd[sel].folder);
             ui_confirm("Delete this game?", body, "Delete");
         }
         ui_end_frame();
     }
     free(list);
     sd_free();
+}
+
+/* Point installs (and staging) at the SD card or the USB drive. Returns false (with a message) if the USB
+   drive can't be used. */
+static bool set_target(bool usb, bool quiet)
+{
+    if (usb && !usbfs_mounted()) {
+        char err[300];
+        if (usbfs_mount(err, sizeof(err)) != 0) {
+            if (!quiet) message_box(UI_MSG_ERROR, "Can't use the USB drive", err);
+            else snprintf(gStartNote, sizeof(gStartNote), "Couldn't use the USB drive, so games go to the SD card. %.200s", err);
+            usb = false;
+        }
+    }
+    if (usbfs_mounted()) gUsbSeen = true;
+    gUseUsb = usb;
+    snprintf(gTmpDir, sizeof(gTmpDir), "%s", usb ? USB_TMP : TMP_DIR);
+    mkdir_p(gTmpDir);
+    update_sd_text();
+    /* "partly downloaded" depends on which drive's staging folder we look in */
+    if (entryCount) {
+        scan_tmp_dir();
+        for (int i = 0; i < entryCount; i++) refresh_status(&entries[i]);
+        gTmpSetValid = false;
+        rebuild_items();
+    }
+    return gUseUsb == usb;
 }
 
 /* + menu. Returns MENU_* */
@@ -3395,8 +3455,8 @@ static int menu_screen(void)
 {
     static const char *sorts[] = {"List order", "A-Z", "Installed first"};
     static const char *shows[] = {"All games", "Starred", "Installed", "Not installed", "Queued"};
-    enum { M_QUEUE, M_CLEAR, M_QOFF, M_SORT, M_SHOW, M_ONLY, M_DUPES, M_REGION, M_SD, M_MUSIC, M_CHIME, M_RELOAD, M_EXIT,
-           M_N };
+    enum { M_QUEUE, M_CLEAR, M_QOFF, M_TARGET, M_SORT, M_SHOW, M_ONLY, M_DUPES, M_REGION, M_SD, M_MUSIC, M_CHIME, M_RELOAD,
+           M_EXIT, M_N };
     int sel = gQueueCount ? M_QUEUE : M_SORT;
     while (!gQuit) {
         pump();
@@ -3407,13 +3467,14 @@ static int menu_screen(void)
             {"Download the queue", qv, false, gQueueCount == 0},
             {"Clear the queue", NULL, true, gQueueCount == 0},
             {"When the queue is done", gQueueOff ? "Turn off the Wii U" : "Stay on", false, false},
+            {"Install to", gUseUsb ? "USB drive (FAT32)" : "SD card", false, false},
             {"Sort", sorts[gSort], false, false},
             {"Show", shows[gShow], false, false},
             {"Regions", gRegionOnly == 'E' ? "USA only" : gRegionOnly == 'P' ? "Europe only" : gRegionOnly == 'J' ? "Japan only"
                                                                                                           : "All regions", false, false},
             {"Region duplicates", gHideDupes ? "Hidden" : "Shown", false, false},
             {"Preferred region", gRegionPref == 'P' ? "Europe" : gRegionPref == 'J' ? "Japan" : "USA", false, false},
-            {"SD card: installed games", gSdText[0] ? gSdText : NULL, false, false},
+            {"Installed games", gSdText[0] ? gSdText : NULL, false, false},
             {"Music", gMusicState == 1 ? "On" : "Off", false, gMusicState < 0},
             {"Sounds", gChimeOn ? "On" : "Off", false, !gChime},
             {"Reload the list", NULL, false, false},
@@ -3466,6 +3527,10 @@ static int menu_screen(void)
             }
             case M_MUSIC: music_toggle(); save_state(); break;
             case M_QOFF: gQueueOff = !gQueueOff; save_state(); break;
+            case M_TARGET:
+                set_target(!gUseUsb, false);
+                save_state();
+                break;
             case M_CHIME:
                 gChimeOn = !gChimeOn;
                 save_state();
@@ -3829,6 +3894,12 @@ int main(int argc, char **argv)
     IMG_Init(IMG_INIT_PNG);
     bool netOk = net_init() == 0;
     gNetOk = netOk;
+    {
+        bool wantUsb = gUseUsb;
+        char err[300];
+        if (wantUsb) set_target(true, true);
+        else if (gUsbSeen && usbfs_mount(err, sizeof(err)) == 0) set_target(false, true); /* just to see what's on it */
+    }
     if (netOk) covers_start(&cfg, COVER_DIR, USBGX_ROOT, USBGX_COVERS, COVER_DIR "/ids.txt");
     bool firstRun = load_entries() < 0;
     if (!netOk) message_box(UI_MSG_ERROR, "Network error", "Could not start networking. Check your internet settings.");
@@ -3837,6 +3908,7 @@ int main(int argc, char **argv)
                     "Created sd:/wiiu/apps/wiidrop/links.txt. Put the SD card in your PC, add one direct download "
                     "link per line, then choose Reload in the + menu.");
     if (gListNote[0]) message_box(UI_MSG_INFO, "Using a saved list", gListNote);
+    if (gStartNote[0]) message_box(UI_MSG_INFO, "Installing to the SD card", gStartNote);
     if (netOk && cfg.update_check) update_check_start(&cfg);
 
     double exitStart = -1;
@@ -3939,6 +4011,7 @@ int main(int argc, char **argv)
        processing ProcUI messages until the system says we're done, which is what makes the
        console actually go back to the Wii U Menu. */
     if (netOk) covers_stop();
+    usbfs_unmount();
     free_covers();
     music_shutdown();
     ui_shutdown();

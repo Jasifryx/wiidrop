@@ -18,7 +18,7 @@ APP_AUTHOR    := WiiDrop contributors
 
 TARGET   := wiidrop
 BUILD    := build
-SOURCES  := source source/lzma source/zstd/common source/zstd/decompress
+SOURCES  := source source/lzma source/zstd/common source/zstd/decompress source/fatfs
 DATA     := data          # files here are embedded into the app (data/foo.mp3 -> foo_mp3[])
 INCLUDES := source
 ICON     := $(wildcard $(TOPDIR)/meta/icon.png)
@@ -37,9 +37,9 @@ LIBS     := -lSDL2_image -ljpeg -lwebpdemux -lwebp -lsharpyuv \
             -lSDL2_ttf -lharfbuzz -lfreetype -lpng16 -lbz2 \
             -lSDL2 \
             -lcurl -lmbedtls -lmbedx509 -lmbedcrypto -lbrotlidec -lbrotlicommon -lz \
-            -lstdc++ -lwut -lm
+            -lmocha -lstdc++ -lwut -lm
 
-LIBDIRS  := $(PORTLIBS) $(WUT_ROOT)
+LIBDIRS  := $(PORTLIBS) $(WUT_ROOT) $(WUT_ROOT)/usr
 
 #-------------------------------------------------------------------------------
 ifneq ($(BUILD),$(notdir $(CURDIR)))

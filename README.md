@@ -57,6 +57,12 @@ Features
   over from a PC) with its size and the space left, and deletes any of them.
 - **Updates:** at start WiiDrop looks for a newer release on GitHub and asks before updating. The download is
   checked against GitHub's SHA-256 before it replaces the app. Turn it off with `update_check = 0`.
+- **Install to a USB drive (beta):** + menu → *Install to* → *USB drive*. Games go to `usb:/wbfs/…` and
+  `usb:/games/…` on a **FAT32** USB drive, where USB Loader GX and Nintendont find them, and downloads are staged
+  on the drive too (`usb:/wiidrop/tmp`). Drives that aren't FAT32 (NTFS, exFAT, a Wii U-formatted drive) are
+  refused and never written to. It uses Aroma's Mocha for raw access to the drive and FatFs for the FAT32 file
+  system; *Installed games* lists what's on both the SD card and the USB drive. **New and only tested on a PC so
+  far: try it on a spare drive with nothing important on it first.**
 - **Sort, filter, star:** sort by list order / A-Z / installed first; show all, starred, installed, not
   installed or queued games; show only one region (USA / Europe / Japan, from the name's Redump tags or the
   game ID; games whose region can't be told stay visible); hide region duplicates (keeps the installed copy,
@@ -90,9 +96,11 @@ container. Download `wiidrop.wuhb` from the run's **Artifacts**.
 2. In the devkitPro **MSYS2** shell:
    ```sh
    dkp-pacman -Syu --needed wut wut-tools wiiu-curl wiiu-sdl2 wiiu-sdl2_ttf wiiu-sdl2_mixer wiiu-sdl2_image
+   git clone https://github.com/wiiu-env/libmocha.git && make -C libmocha install   # USB drive access
    cd /c/path/to/wiidrop
    make
    ```
+   (The GitHub build uses libmocha commit `50fefdf`.)
 
 The Wii U Menu icon is `meta/icon.png` (redraw it with `python tools/make_icon.py`).
 
@@ -190,6 +198,8 @@ source/zipstream.c    streaming .zip reader with resume points (zlib inflate)
 source/sevenzip.c     streaming .7z extraction (reads split staging files, writes split output)
 source/lzma/          7-Zip 26.06 C decoder by Igor Pavlov (public domain), unmodified
 source/config.c       links.txt + config.ini parsing
+source/usbfs.c        FAT32 USB drives: raw access via Mocha, FatFs, and a usb:/ device for the C library
+source/fatfs/         FatFs R0.16 by ChaN (BSD-style), only ffconf.h changed
 ```
 
 ## Music
