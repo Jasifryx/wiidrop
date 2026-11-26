@@ -12,10 +12,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Wii U libraries
-        # devkitPro's package server sometimes refuses a request (HTTP 403): try a few times before failing
+        # The devkitPro image usually has these already; only download what's missing. devkitPro's package
+        # server sometimes refuses requests from CI (HTTP 403), so try a few times before failing.
         run: |
+          PKGS="wut wut-tools wiiu-curl wiiu-sdl2 wiiu-sdl2_ttf wiiu-sdl2_mixer wiiu-sdl2_image"
+          if dkp-pacman -Q $PKGS; then echo "All libraries are in the image already"; exit 0; fi
           for i in 1 2 3 4 5; do
-            dkp-pacman -Syu --noconfirm --needed wut wut-tools wiiu-curl wiiu-sdl2 wiiu-sdl2_ttf wiiu-sdl2_mixer wiiu-sdl2_image && exit 0
+            dkp-pacman -Sy --noconfirm --needed $PKGS && exit 0
             echo "Package download failed, retrying in 30 s ($i/5)"
             sleep 30
           done
