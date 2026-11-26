@@ -3340,10 +3340,10 @@ static void storage_screen(void)
         } else {
             if (in.pressed & (VPAD_BUTTON_B | VPAD_BUTTON_PLUS)) break;
             if (gSdCount > 0) {
-                if (in.pressed & VPAD_BUTTON_DOWN) sel++;
-                if (in.pressed & VPAD_BUTTON_UP) sel--;
-                if (in.pressed & VPAD_BUTTON_RIGHT) sel += 4;
-                if (in.pressed & VPAD_BUTTON_LEFT) sel -= 4;
+                if (in.pressed & VPAD_BUTTON_RIGHT) sel++;
+                if (in.pressed & VPAD_BUTTON_LEFT) sel--;
+                if (in.pressed & VPAD_BUTTON_DOWN) sel += 5;
+                if (in.pressed & VPAD_BUTTON_UP) sel -= 5;
                 if (sel >= gSdCount) sel = gSdCount - 1;
                 if (sel < 0) sel = 0;
                 if (in.tap) {
@@ -3957,11 +3957,11 @@ int main(int argc, char **argv)
             }
             if (gQuery[0] && (in.pressed & VPAD_BUTTON_B)) apply_search("");
             if (gViewCount > 0) {
-                int page = 4;
-                if (in.pressed & VPAD_BUTTON_DOWN) gSel++;
-                if (in.pressed & VPAD_BUTTON_UP) gSel--;
-                if (in.pressed & VPAD_BUTTON_RIGHT) gSel += page;
-                if (in.pressed & VPAD_BUTTON_LEFT) gSel -= page;
+                int page = 5; /* the shelf runs sideways: left/right one game, up/down five */
+                if (in.pressed & VPAD_BUTTON_RIGHT) gSel++;
+                if (in.pressed & VPAD_BUTTON_LEFT) gSel--;
+                if (in.pressed & VPAD_BUTTON_DOWN) gSel += page;
+                if (in.pressed & VPAD_BUTTON_UP) gSel -= page;
                 if (in.pressed & VPAD_BUTTON_ZR) gSel += 100;
                 if (in.pressed & VPAD_BUTTON_ZL) gSel -= 100;
                 if (gShow == SHOW_QUEUED) { /* the Queued view is the queue: L / R move the game */
