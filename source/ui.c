@@ -503,6 +503,12 @@ static void add_quad(float x0, float y0, float x1, float y1, float x2, float y2,
 }
 
 static bool gUnderwaterOnly; /* full-screen scenes (progress) sink the waterline off screen */
+static bool gLowPower;       /* a transfer is running: draw as little as possible */
+
+void ui_set_low_power(bool on)
+{
+    gLowPower = on;
+}
 
 void ui_begin_frame(double t)
 {
@@ -526,6 +532,10 @@ void ui_begin_frame(double t)
                   RGBA(2, 14, 18, 255));
     }
 
+    if (gLowPower) { /* just the water: no sunbeams, shimmer, bubbles or glints */
+        gUnderwaterOnly = false;
+        return;
+    }
     /* sunbeams slanting down through the water, slowly swaying */
     for (int i = 0; i < 4; i++) {
         float base = 160 + i * 300 + 40 * sinf(tt * 0.21f + i * 1.7f);
@@ -1018,10 +1028,11 @@ static void draw_droplet(float cx, float cy, float r, float fill, bool known)
     float px[DROP_N + 2], py[DROP_N + 2], wx[DROP_N * 2 + 4], wy[DROP_N * 2 + 4];
     int n = drop_poly(cx, cy, r, px, py);
     float top = cy - r * 2.15f, bottom = cy + r;
-    glow(cx, cy - r * 0.4f, r * 2.6f, RGBA(93, 202, 165, 36), true);
+    if (!gLowPower) glow(cx, cy - r * 0.4f, r * 2.6f, RGBA(93, 202, 165, 36), true);
     fill_convex(px, py, n, RGBA(150, 240, 220, 18), RGBA(93, 202, 165, 30), top, bottom); /* glass */
+    float tw = gLowPower ? 0 : (float)T; /* the surface only moves when there's time to spare */
 
-    if (!known) fill = 0.5f + 0.06f * sinf((float)T * 1.3f);
+    if (!known) fill = 0.5f + 0.06f * sinf(tw * 1.3f);
     float level = bottom - (bottom - top) * clampf(fill, 0, 1);
     /* waves: lower the level a little at the crest, fill the strip with a sine edge */
     float wave = 6;
@@ -1041,7 +1052,7 @@ static void draw_droplet(float cx, float cy, float r, float fill, bool known)
         float lx[SEG + 1], ly[SEG + 1];
         for (int k = 0; k <= SEG; k++) { /* the wave body and its foam line, one draw call each */
             float wx0 = xl + (xr - xl) * k / SEG;
-            float wy0 = level + wave * sinf((float)T * 2.6f + wx0 * 0.05f);
+            float wy0 = level + wave * sinf(tw * 2.6f + wx0 * 0.05f);
             v[k * 2] = vtx(wx0, wy0, RGBA(150, 245, 220, 235));
             v[k * 2 + 1] = vtx(wx0, level + wave + 1, RGBA(100, 225, 195, 235));
             lx[k] = wx0;
@@ -1059,7 +1070,7 @@ static void draw_droplet(float cx, float cy, float r, float fill, bool known)
         SDL_RenderGeometry(R, NULL, v, (SEG + 1) * 2, idx, ni);
         stroke_poly(lx, ly, SEG + 1, 2, RGBA(230, 255, 248, 200), false);
         /* bubbles inside the water */
-        for (int i = 0; i < 9; i++) {
+        for (int i = 0; i < (gLowPower ? 0 : 9); i++) {
             float sp = 25 + 30 * hash01(i, 41);
             float span = bottom - level;
             if (span < 20) break;
@@ -1117,7 +1128,7 @@ void ui_progress(const UiProgress *p)
     if (known) {
         float fw = bw * clampf(frac, 0, 1);
         if (fw > 10) fill_rrect_hgrad(x, y, fw, bh, 5, RGBA(60, 180, 150, 255), RGBA(160, 245, 220, 255));
-        glow(x + fw, y + bh / 2, 26, RGBA(150, 245, 220, 90), true);
+        if (!gLowPower) glow(x + fw, y + bh / 2, 26, RGBA(150, 245, 220, 90), true);
     } else {
         float ph = fmodf((float)T * 0.6f, 1.0f);
         fill_rrect(x + (bw - 140) * ph, y, 140, bh, 5, alpha(C_ACCENT, 200));

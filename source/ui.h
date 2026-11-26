@@ -87,6 +87,9 @@ void ui_menu(const char *title, const UiMenuItem *items, int count, int sel);
 int ui_menu_hit(int x, int y, int count);
 /* Modal yes/no card: "A <yes>" and "B Cancel". */
 void ui_confirm(const char *title, const char *body, const char *yes);
+/* Low-power drawing while a download or rebuild runs: no moving scenery, a still droplet. The UI shares the
+   CPU with the transfer, so every frame drawn is time taken from it. */
+void ui_set_low_power(bool on);
 /* Fade the whole screen to black (0..1), for exit. */
 void ui_fade(float amount);
 
