@@ -1,7 +1,29 @@
 # WiiDrop
 
 Wii U homebrew (Aroma) that downloads your own Wii and GameCube dumps **straight from direct links**
-onto the SD card, ready for vWii loaders. No PC or server program needed: the console fetches each link itself.
+onto the SD card (or a FAT32 USB drive), ready for vWii loaders. No PC or server program needed: the console
+fetches each link itself.
+
+![Your library as a shelf of box art standing on the water](docs/screenshots/shelf.png)
+
+| | |
+|---|---|
+| ![A droplet fills up as the game downloads](docs/screenshots/download.png) | ![Game details](docs/screenshots/details.png) |
+
+## Quick start
+
+1. Download `wiidrop.wuhb` from the [latest release](../../releases) and copy it to `sd:/wiiu/apps/` on your
+   SD card. You need a Wii U running [Aroma](https://aroma.foryour.cafe).
+2. Start WiiDrop once from the Wii U Menu. It creates `sd:/wiiu/apps/wiidrop/links.txt`.
+3. On your PC, put your links in `links.txt`, one per line: direct download links to your own `.wbfs`, `.iso`,
+   `.rvz`, `.zip` or `.7z` files. An optional name goes in front, like `Mario Kart Wii | https://...`.
+4. Put the SD card back, start WiiDrop, pick a game and press **A**, then **A** again to install.
+5. Launch the game with USB Loader GX or WiiFlow (Wii) or Nintendont (GameCube).
+
+Everything else (queue, search, USB drive, Metacritic scores, settings) is in the **+** menu and config.ini,
+described below.
+
+## What it does
 
 | Link points to        | Lands on the SD card                                   | Launch with             |
 |-----------------------|--------------------------------------------------------|-------------------------|
@@ -13,7 +35,7 @@ onto the SD card, ready for vWii loaders. No PC or server program needed: the co
 
 The game's ID, title and type come from the file's own disc header, so all you supply is the link.
 
-Features
+## Features
 - Games over 4 GB are split automatically for FAT32 (`ID.wbfs`, `ID.wbf1`…, same scheme as Wii Backup Manager).
 - Checks the first bytes of every download. A link that returns a web page (a typical share-link problem)
   is stopped right away with a clear message instead of filling your card.
@@ -57,12 +79,12 @@ Features
   over from a PC) with its size and the space left, and deletes any of them.
 - **Updates:** at start WiiDrop looks for a newer release on GitHub and asks before updating. The download is
   checked against GitHub's SHA-256 before it replaces the app. Turn it off with `update_check = 0`.
-- **Install to a USB drive (beta):** + menu → *Install to* → *USB drive*. Games go to `usb:/wbfs/…` and
+- **Install to a USB drive (lightly tested):** + menu → *Install to* → *USB drive*. Games go to `usb:/wbfs/…` and
   `usb:/games/…` on a **FAT32** USB drive, where USB Loader GX and Nintendont find them, and downloads are staged
   on the drive too (`usb:/wiidrop/tmp`). Drives that aren't FAT32 (NTFS, exFAT, a Wii U-formatted drive) are
   refused and never written to. It uses Aroma's Mocha for raw access to the drive and FatFs for the FAT32 file
-  system; *Installed games* lists what's on both the SD card and the USB drive. **New and only tested on a PC so
-  far: try it on a spare drive with nothing important on it first.**
+  system; *Installed games* lists what's on both the SD card and the USB drive. **USB installs have only been
+  lightly tested so far. Back up anything important on the drive first, or try it on a spare drive.**
 - **Metacritic scores (optional):** put your own free [RAWG](https://rawg.io) API key in config.ini
   (`rawg_key`, get one at [rawg.io/apidocs](https://rawg.io/apidocs)) and each game's Metacritic score shows on its
   cover and details screen, colour-coded like Metacritic's. Each game is looked up once, the first time it's near

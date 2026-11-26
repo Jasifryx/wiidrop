@@ -1,0 +1,66 @@
+name: Bug report
+description: Something in WiiDrop doesn't work the way it should
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting this. Please don't post links to games or to where you host them. They aren't needed, and issues containing them will be closed.
+  - type: input
+    id: version
+    attributes:
+      label: WiiDrop version
+      description: Shown at the top of the + menu, for example 1.0.0-beta.4.
+      placeholder: 1.0.0-beta.4
+    validations:
+      required: true
+  - type: dropdown
+    id: file
+    attributes:
+      label: Type of file
+      description: What the link points to.
+      options:
+        - .wbfs
+        - .iso (Wii)
+        - .iso (GameCube)
+        - .rvz / .wia
+        - .zip
+        - .7z
+        - Not about a download
+    validations:
+      required: true
+  - type: dropdown
+    id: drive
+    attributes:
+      label: Installing to
+      options:
+        - SD card
+        - USB drive (FAT32)
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+      placeholder: I picked a game and pressed A. The download reached 40%, then...
+    validations:
+      required: true
+  - type: textarea
+    id: error
+    attributes:
+      label: Error message
+      description: The exact text WiiDrop showed, if any. A photo of the screen works too (drag it in here).
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection to your server
+      options:
+        - https
+        - http
+        - Not sure
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Wi-Fi or wired, roughly how big the file was, whether it happens every time, the drive size and format for USB problems.
