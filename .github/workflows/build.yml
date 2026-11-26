@@ -12,7 +12,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install Wii U libraries
-        run: dkp-pacman -Syu --noconfirm --needed wut wut-tools wiiu-curl wiiu-sdl2 wiiu-sdl2_ttf wiiu-sdl2_mixer wiiu-sdl2_image
+        # devkitPro's package server sometimes refuses a request (HTTP 403): try a few times before failing
+        run: |
+          for i in 1 2 3 4 5; do
+            dkp-pacman -Syu --noconfirm --needed wut wut-tools wiiu-curl wiiu-sdl2 wiiu-sdl2_ttf wiiu-sdl2_mixer wiiu-sdl2_image && exit 0
+            echo "Package download failed, retrying in 30 s ($i/5)"
+            sleep 30
+          done
+          exit 1
       - name: Install libmocha (USB drive access; pinned commit)
         run: |
           git clone https://github.com/wiiu-env/libmocha.git /tmp/libmocha
