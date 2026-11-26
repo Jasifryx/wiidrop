@@ -10,8 +10,8 @@ body:
     id: version
     attributes:
       label: WiiDrop version
-      description: Shown at the top of the + menu, for example 1.0.0-beta.4.
-      placeholder: 1.0.0-beta.4
+      description: Shown at the top of the + menu, for example 1.0.0-beta.5.
+      placeholder: 1.0.0-beta.5
     validations:
       required: true
   - type: dropdown

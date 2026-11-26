@@ -79,7 +79,7 @@
 #define M_PI 3.14159265358979323846
 #endif
 #define MUSIC_MAX_VOLUME 84 /* of 128 */
-#define WIIDROP_VERSION  "1.0.0-beta.4"
+#define WIIDROP_VERSION  "1.0.0-beta.5"
 
 /* ------------------------------------------------------------------ app state */
 
