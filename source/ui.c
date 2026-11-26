@@ -532,12 +532,8 @@ void ui_begin_frame(double t)
                   RGBA(2, 14, 18, 255));
     }
 
-    if (gLowPower) { /* just the water: no sunbeams, shimmer, bubbles or glints */
-        gUnderwaterOnly = false;
-        return;
-    }
-    /* sunbeams slanting down through the water, slowly swaying */
-    for (int i = 0; i < 4; i++) {
+    /* sunbeams slanting down through the water, slowly swaying (two during transfers) */
+    for (int i = 0; i < (gLowPower ? 2 : 4); i++) {
         float base = 160 + i * 300 + 40 * sinf(tt * 0.21f + i * 1.7f);
         float w = 50 + 40 * hash01(i, 9);
         float sway = 140 + 30 * sinf(tt * 0.15f + i);
@@ -545,14 +541,14 @@ void ui_begin_frame(double t)
         add_quad(base, 0, base + w, 0, base + sway - w * 0.6f, UI_H, base + sway + w * 1.4f, UI_H, RGBA(120, 230, 210, a),
                  RGBA(120, 230, 210, 0));
     }
-    /* caustic shimmer near the surface */
-    for (int i = 0; i < 4; i++) {
+    /* caustic shimmer near the surface (the costliest effect: skipped during transfers) */
+    for (int i = 0; i < (gLowPower ? 0 : 4); i++) {
         float x = fmodf(hash01(i, 21) * UI_W + tt * (12 + 10 * hash01(i, 22)), UI_W + 400) - 200;
         float y = 90 + 260 * hash01(i, 23) + 20 * sinf(tt * 0.6f + i);
         glow(x, y, 160 + 90 * hash01(i, 24), RGBA(60, 200, 170, 22), true);
     }
-    /* rising bubbles */
-    for (int i = 0; i < 22; i++) {
+    /* rising bubbles (fewer during transfers) */
+    for (int i = 0; i < (gLowPower ? 8 : 22); i++) {
         float speed = 14 + hash01(i, 1) * 30;
         float x = hash01(i, 2) * UI_W + sinf(tt * (0.8f + hash01(i, 6)) + i) * 10;
         float span = UI_H + 40;
@@ -563,7 +559,7 @@ void ui_begin_frame(double t)
     }
 
     /* the waterline: a bright, gently moving surface with glints */
-    if (!gUnderwaterOnly) {
+    if (!gUnderwaterOnly && !gLowPower) {
         glow_line(0, WATER_Y, UI_W, RGBA(140, 240, 215, 150));
         grad_rect(0, WATER_Y - 30, UI_W, 30, RGBA(93, 202, 165, 0), RGBA(93, 202, 165, 0), RGBA(93, 202, 165, 22),
                   RGBA(93, 202, 165, 22));
@@ -1028,9 +1024,9 @@ static void draw_droplet(float cx, float cy, float r, float fill, bool known)
     float px[DROP_N + 2], py[DROP_N + 2], wx[DROP_N * 2 + 4], wy[DROP_N * 2 + 4];
     int n = drop_poly(cx, cy, r, px, py);
     float top = cy - r * 2.15f, bottom = cy + r;
-    if (!gLowPower) glow(cx, cy - r * 0.4f, r * 2.6f, RGBA(93, 202, 165, 36), true);
+    glow(cx, cy - r * 0.4f, r * 2.6f, RGBA(93, 202, 165, 36), true);
     fill_convex(px, py, n, RGBA(150, 240, 220, 18), RGBA(93, 202, 165, 30), top, bottom); /* glass */
-    float tw = gLowPower ? 0 : (float)T; /* the surface only moves when there's time to spare */
+    float tw = (float)T;
 
     if (!known) fill = 0.5f + 0.06f * sinf(tw * 1.3f);
     float level = bottom - (bottom - top) * clampf(fill, 0, 1);
@@ -1070,7 +1066,7 @@ static void draw_droplet(float cx, float cy, float r, float fill, bool known)
         SDL_RenderGeometry(R, NULL, v, (SEG + 1) * 2, idx, ni);
         stroke_poly(lx, ly, SEG + 1, 2, RGBA(230, 255, 248, 200), false);
         /* bubbles inside the water */
-        for (int i = 0; i < (gLowPower ? 0 : 9); i++) {
+        for (int i = 0; i < (gLowPower ? 4 : 9); i++) {
             float sp = 25 + 30 * hash01(i, 41);
             float span = bottom - level;
             if (span < 20) break;
@@ -1128,7 +1124,7 @@ void ui_progress(const UiProgress *p)
     if (known) {
         float fw = bw * clampf(frac, 0, 1);
         if (fw > 10) fill_rrect_hgrad(x, y, fw, bh, 5, RGBA(60, 180, 150, 255), RGBA(160, 245, 220, 255));
-        if (!gLowPower) glow(x + fw, y + bh / 2, 26, RGBA(150, 245, 220, 90), true);
+        glow(x + fw, y + bh / 2, 26, RGBA(150, 245, 220, 90), true);
     } else {
         float ph = fmodf((float)T * 0.6f, 1.0f);
         fill_rrect(x + (bw - 140) * ph, y, 140, bh, 5, alpha(C_ACCENT, 200));

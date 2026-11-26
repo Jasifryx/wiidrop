@@ -1488,7 +1488,7 @@ static void show_progress(const UiProgress *p)
    progress screen), so it's switched off while a transfer runs. */
 /* The progress screen is drawn from inside the download loop, so every redraw pauses the network.
    During transfers: redraw 10x a second and don't wait for the screen refresh (vsync) to present. */
-#define PROGRESS_INTERVAL (1.0 / 6) /* the UI shares the CPU with the transfer: few, cheap frames */
+#define PROGRESS_INTERVAL (1.0 / 10) /* the UI shares the CPU with the transfer: fewer, lighter frames */
 
 static void transfer_begin(void)
 {
