@@ -642,20 +642,6 @@ static float chip(float x, float cy, const char *label, Col c) /* left-anchored,
     return w;
 }
 
-static void star(float cx, float cy, float r, Col c)
-{
-    float px[10], py[10];
-    for (int k = 0; k < 10; k++) {
-        float a = (float)(-M_PI / 2 + k * M_PI / 5), rr = (k & 1) ? r * 0.45f : r;
-        px[k] = cx + rr * cosf(a);
-        py[k] = cy + rr * sinf(a);
-    }
-    for (int k = 0; k < 10; k++) {
-        int n = (k + 1) % 10;
-        triangle(cx, cy, c, px[k], py[k], c, px[n], py[n], c);
-    }
-}
-
 static void heart(float cx, float cy, float r, Col c)
 {
     disc(cx - r * 0.5f, cy - r * 0.15f, r * 0.55f, c);
@@ -663,11 +649,22 @@ static void heart(float cx, float cy, float r, Col c)
     triangle(cx - r * 1.02f, cy + 0.02f * r, c, cx + r * 1.02f, cy + 0.02f * r, c, cx, cy + r * 0.95f, c);
 }
 
-/* five stars, the first `n` lit; returns the width drawn */
-static float rating_stars(float x, float cy, int n, float r)
+/* Metacritic's own colours: green 75+, yellow 50-74, red below */
+static Col meta_color(int score)
 {
-    for (int k = 0; k < 5; k++) star(x + r + k * r * 2.3f, cy, r, k < n ? C_AMBER : RGBA(98, 146, 140, 120));
-    return 5 * r * 2.3f;
+    return score >= 75 ? RGBA(102, 204, 51, 255) : score >= 50 ? RGBA(255, 204, 51, 255) : RGBA(255, 0, 0, 255);
+}
+
+/* a square score badge; returns its width */
+static float meta_badge(float x, float cy, int score, float size)
+{
+    char s[16];
+    snprintf(s, sizeof(s), "%d", score);
+    Col c = meta_color(score);
+    fill_rrect(x, cy - size / 2, size, size, 5, c);
+    text(size >= 30 ? F_S : F_XS, s, x + size / 2, cy - font_h(size >= 30 ? F_S : F_XS) / 2.0f,
+         score >= 50 && score < 75 ? RGBA(40, 30, 0, 255) : RGBA(255, 255, 255, 255), AL_CENTER, 0);
+    return size;
 }
 
 /* a box-art card (or a generated one when there's no art yet), standing with its bottom on y */
@@ -812,6 +809,7 @@ void ui_list(const UiItem *items, int count, int sel)
             fill_rect(bx + 11, by - 5, 3, 10, C_AMBER);
         }
         if (it->fav) heart(x + w - 16, y + 18, 9, RGBA(240, 120, 140, 255));
+        if (it->metacritic > 0) meta_badge(x + w - 32, y + h - 20, it->metacritic, 26);
 
         if (nHits < MAX_HITS) {
             hitRect[nHits] = (SDL_FRect){x, y, w, h};
@@ -834,7 +832,10 @@ void ui_list(const UiItem *items, int count, int sel)
         snprintf(q, sizeof(q), "Queue #%d", s->queuePos);
         cx += chip(cx, cy, q, C_ACCENT2) + 8;
     }
-    if (s->rating > 0) cx += rating_stars(cx + 4, cy, s->rating, 8) + 14;
+    if (s->metacritic > 0) {
+        cx += meta_badge(cx + 2, cy, s->metacritic, 28) + 8;
+        cx += text(F_XS, "Metacritic", cx, cy - font_h(F_XS) / 2.0f, C_MUTED, AL_LEFT, 0) + 14;
+    }
     if (s->subtitle) text(F_S, s->subtitle, cx + 8, cy - font_h(F_S) / 2.0f, C_MUTED, AL_LEFT, (int)(UI_W - 80 - cx - 8));
 }
 
@@ -1228,7 +1229,7 @@ void ui_details(const UiDetails *d)
     /* the cover stands on its own patch of water, with a reflection */
     float ch = 318, cw = ch * 160 / 224.0f, cx = 96, bob = sinf((float)T * 1.6f) * 3;
     float cy = WATER_Y - ch - 8 + bob;
-    UiItem it = {d->title, NULL, d->kind, d->status, d->cover, d->fav, d->queuePos, d->rating};
+    UiItem it = {d->title, NULL, d->kind, d->status, d->cover, d->fav, d->queuePos, d->metacritic};
     card_reflection(&it, cx, cw, ch);
     glow(cx + cw / 2, cy + ch / 2, ch * 0.9f, RGBA(93, 202, 165, 45), true);
     shadow(cx + 8, cy + 12, cw - 16, ch - 16, 26, RGBA(0, 0, 0, 160));
@@ -1251,10 +1252,7 @@ void ui_details(const UiDetails *d)
         snprintf(q, sizeof(q), "Queue #%d", d->queuePos);
         chx += chip(chx, chy, q, C_ACCENT2) + 8;
     }
-    /* your rating, changed with L / R */
-    float rx = chx + 12;
-    rx += rating_stars(rx, chy, d->rating, 9) + 10;
-    text(F_XS, d->rating ? "L / R to change" : "L / R to rate", rx, chy - font_h(F_XS) / 2.0f, C_MUTED, AL_LEFT, 0);
+    if (d->metacritic > 0) chx += meta_badge(chx + 4, chy, d->metacritic, 30) + 12;
     y += 52;
     for (int i = 0; i < d->rowCount && i < 8; i++) {
         if (!d->rows[i][0]) continue;

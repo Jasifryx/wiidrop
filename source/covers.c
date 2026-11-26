@@ -27,6 +27,7 @@ static int inflightIndex = -1;
 static char inflightHash[9];
 
 static Config userCfg, plainCfg;
+static char rawgKey[80];
 static char cacheDir[256], loaderRoot[256], loaderDir[256], idCachePath[256];
 
 /* ------------------------------------------------------------------ ID cache (hash table) */
@@ -194,6 +195,84 @@ int covers_have(const char *id)
     }
     if (mtx) SDL_UnlockMutex(mtx);
     return found;
+}
+
+/* ------------------------------------------------------------------ RAWG score cache (scores.txt) */
+
+typedef struct {
+    uint64_t id; /* packed 6-char ID, 0 = empty */
+    int16_t meta, user;
+} ScoreSlot;
+static ScoreSlot *scores;
+static int nScores, capScores;
+static char scorePath[300];
+
+static void score_put_raw(uint64_t v, int meta, int user)
+{
+    uint32_t h = (uint32_t)(v ^ (v >> 29)) * 2654435761u;
+    for (int i = (int)(h & (uint32_t)(capScores - 1));; i = (i + 1) & (capScores - 1)) {
+        if (scores[i].id == v || !scores[i].id) {
+            if (!scores[i].id) nScores++;
+            scores[i] = (ScoreSlot){v, (int16_t)meta, (int16_t)user};
+            return;
+        }
+    }
+}
+
+static void score_put(const char *id, int meta, int user) /* call with mtx held (or before the worker runs) */
+{
+    uint64_t v = pack_id(id);
+    if (!v) return;
+    if ((nScores + 1) * 2 > capScores) {
+        int cap = capScores ? capScores * 2 : 1024;
+        ScoreSlot *old = scores;
+        int oldCap = capScores;
+        scores = calloc((size_t)cap, sizeof(ScoreSlot));
+        if (!scores) {
+            scores = old;
+            return;
+        }
+        capScores = cap;
+        nScores = 0;
+        for (int i = 0; i < oldCap; i++)
+            if (old[i].id) score_put_raw(old[i].id, old[i].meta, old[i].user);
+        free(old);
+    }
+    score_put_raw(v, meta, user);
+}
+
+int covers_score(const char *id, int *metacritic, int *userRating)
+{
+    int found = 0;
+    if (!id || !id[0]) return 0;
+    if (mtx) SDL_LockMutex(mtx);
+    if (capScores) {
+        uint64_t v = pack_id(id);
+        uint32_t h = (uint32_t)(v ^ (v >> 29)) * 2654435761u;
+        for (int i = (int)(h & (uint32_t)(capScores - 1));; i = (i + 1) & (capScores - 1)) {
+            if (!scores[i].id) break;
+            if (scores[i].id == v) {
+                *metacritic = scores[i].meta;
+                *userRating = scores[i].user;
+                found = 1;
+                break;
+            }
+        }
+    }
+    if (mtx) SDL_UnlockMutex(mtx);
+    return found;
+}
+
+/* scores.txt: ID <TAB> metacritic (0 = none) <TAB> RAWG user rating x10 */
+static void scores_load(void)
+{
+    FILE *f = fopen(scorePath, "r");
+    if (!f) return;
+    char line[64], id[16];
+    int m, u;
+    while (fgets(line, sizeof(line), f))
+        if (sscanf(line, "%15s %d %d", id, &m, &u) == 3 && strlen(id) == 6) score_put(id, m, u);
+    fclose(f);
 }
 
 /* one directory listing instead of a file check per game */
@@ -454,6 +533,22 @@ static int common_words(char a[MAX_WORDS][24], int na, char b[MAX_WORDS][24], in
     return c;
 }
 
+/* sequels differ by a number: "Galaxy" and "Galaxy 2", "Mario Party 8" and "9" must not match */
+static bool same_numbers(char a[MAX_WORDS][24], int na, char b[MAX_WORDS][24], int nb)
+{
+    for (int pass = 0; pass < 2; pass++) {
+        char (*x)[24] = pass ? b : a, (*y)[24] = pass ? a : b;
+        int nx = pass ? nb : na, ny = pass ? na : nb;
+        for (int i = 0; i < nx; i++) {
+            if (x[i][0] < '0' || x[i][0] > '9') continue;
+            bool found = false;
+            for (int k = 0; k < ny && !found; k++) found = !strcmp(x[i], y[k]);
+            if (!found) return false;
+        }
+    }
+    return true;
+}
+
 /* among rows lo..hi (same title), pick the region: exact letter, any European letter for PAL, then E, P, J */
 static TitleRow *pick_region(TitleRow *lo, TitleRow *hi, char want)
 {
@@ -530,7 +625,7 @@ int covers_id_from_name(const char *fileName, char id[7], char title[65])
             int nt = title_words(titles[i].title, tw);
             if (nt == 0) continue;
             int c = common_words(qw, nq, tw, nt);
-            if (c < 2) continue;
+            if (c < 2 || !same_numbers(qw, nq, tw, nt)) continue;
             double score = 2.0 * c / (nq + nt);
             if (score > bestScore + 1e-9) {
                 bestScore = score;
@@ -552,6 +647,153 @@ int covers_id_from_name(const char *fileName, char id[7], char title[65])
     snprintf(id, 7, "%s", best->id);
     snprintf(title, 65, "%s", best->title);
     return 1;
+}
+
+/* ---- RAWG replies: a tiny JSON walker (only what's needed: the "results" array's name/metacritic/rating) ---- */
+
+static const char *js_ws(const char *p)
+{
+    while (*p == ' ' || *p == '\n' || *p == '\r' || *p == '\t') p++;
+    return p;
+}
+
+/* skip one JSON value; NULL if malformed */
+static const char *js_skip(const char *p)
+{
+    p = js_ws(p);
+    if (*p == '"') {
+        for (p++; *p && *p != '"'; p++)
+            if (*p == '\\' && p[1]) p++;
+        return *p ? p + 1 : NULL;
+    }
+    if (*p == '{' || *p == '[') {
+        char close = *p == '{' ? '}' : ']';
+        p = js_ws(p + 1);
+        if (*p == close) return p + 1;
+        for (;;) {
+            if (close == '}') { /* "key": value */
+                p = js_skip(p);
+                if (!p) return NULL;
+                p = js_ws(p);
+                if (*p != ':') return NULL;
+                p++;
+            }
+            p = js_skip(p);
+            if (!p) return NULL;
+            p = js_ws(p);
+            if (*p == ',') {
+                p = js_ws(p + 1);
+                continue;
+            }
+            return *p == close ? p + 1 : NULL;
+        }
+    }
+    while (*p && *p != ',' && *p != '}' && *p != ']' && *p != ' ' && *p != '\n' && *p != '\r' && *p != '\t') p++;
+    return p;
+}
+
+/* read a JSON string at p (pointing at the opening quote) into out */
+static void js_string(const char *p, char *out, size_t n)
+{
+    size_t j = 0;
+    if (*p == '"') p++;
+    for (; *p && *p != '"'; p++) {
+        char c = *p;
+        if (c == '\\' && p[1]) {
+            p++;
+            c = *p == 'n' ? ' ' : *p == 'u' ? '?' : *p;
+            if (*p == 'u') p += 4 <= (int)strlen(p) ? 4 : 0;
+        }
+        if (j + 1 < n) out[j++] = c;
+    }
+    out[j] = '\0';
+}
+
+int covers_parse_rawg(const char *json, const char *title, int *metacritic, int *userRating)
+{
+    if (!json || !title || !title[0]) return 0;
+    char want[64];
+    norm_title(title, want, sizeof(want));
+    char qw[MAX_WORDS][24];
+    int nq = title_words(title, qw);
+    /* find the top-level "results": [ ... ] */
+    const char *p = js_ws(json);
+    if (*p != '{') return 0;
+    p = js_ws(p + 1);
+    const char *arr = NULL;
+    while (*p == '"') {
+        char key[32];
+        js_string(p, key, sizeof(key));
+        p = js_skip(p);
+        if (!p) return 0;
+        p = js_ws(p);
+        if (*p != ':') return 0;
+        p = js_ws(p + 1);
+        if (!strcmp(key, "results")) {
+            arr = p;
+            break;
+        }
+        p = js_skip(p);
+        if (!p) return 0;
+        p = js_ws(p);
+        if (*p == ',') p = js_ws(p + 1);
+    }
+    if (!arr || *arr != '[') return 0;
+    p = js_ws(arr + 1);
+    int bestScore = -1, bestMeta = 0, bestUser = 0;
+    while (*p == '{') {
+        char name[160] = "";
+        int meta = 0, user = 0;
+        const char *q = js_ws(p + 1);
+        while (*q == '"') { /* the game's own (top-level) fields only */
+            char key[32];
+            js_string(q, key, sizeof(key));
+            q = js_skip(q);
+            if (!q) return 0;
+            q = js_ws(q);
+            if (*q != ':') return 0;
+            q = js_ws(q + 1);
+            if (!strcmp(key, "name") && *q == '"') js_string(q, name, sizeof(name));
+            else if (!strcmp(key, "metacritic")) meta = atoi(q);
+            else if (!strcmp(key, "rating")) user = (int)(atof(q) * 10 + 0.5);
+            q = js_skip(q);
+            if (!q) return 0;
+            q = js_ws(q);
+            if (*q == ',') q = js_ws(q + 1);
+        }
+        if (*q != '}') return 0;
+        /* how well does it match? exact (ignoring punctuation) beats a close word match */
+        char got[64];
+        norm_title(name, got, sizeof(got));
+        int score = -1;
+        if (!strcmp(got, want)) score = 1000;
+        else {
+            char tw[MAX_WORDS][24];
+            int nt = title_words(name, tw);
+            int c = nq && nt ? common_words(qw, nq, tw, nt) : 0;
+            double dice = nq + nt ? 2.0 * c / (nq + nt) : 0;
+            if (c >= 2 && dice >= 0.8 && same_numbers(qw, nq, tw, nt)) score = (int)(dice * 100);
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            bestMeta = meta > 0 && meta <= 100 ? meta : 0;
+            bestUser = user > 0 && user <= 50 ? user : 0;
+        }
+        p = js_ws(q + 1);
+        if (*p == ',') p = js_ws(p + 1);
+    }
+    if (bestScore < 0) return 0;
+    *metacritic = bestMeta;
+    *userRating = bestUser;
+    return 1;
+}
+
+/* the GameTDB title for an ID (nicer to search with than a disc header's) */
+static const char *title_for_id(const char *id)
+{
+    for (int i = 0; i < nTitles; i++)
+        if (!strcmp(titles[i].id, id)) return titles[i].title;
+    return NULL;
 }
 
 /* The title list: from the SD card, else downloaded from GameTDB (https, then plain http). Worker thread only.
@@ -601,6 +843,7 @@ static void process(CoverJob *job)
 {
     char err[256];
     size_t len;
+    job->metacritic = -1; /* "not looked up" unless step 3 runs */
 
     /* 1. find the game ID from the first bytes of the file on the user's server */
     if (!job->id[0] && job->peek) {
@@ -670,7 +913,47 @@ static void process(CoverJob *job)
         if (!job->hasCover) snprintf(job->why, sizeof(job->why), "GameTDB has no cover for %s.", job->id);
     }
 
-    /* 3. optional copy for the loader, so it doesn't have to download it again */
+    /* 3. Metacritic score from RAWG (your own key), once per game, remembered in scores.txt */
+    job->metacritic = -1;
+    if (rawgKey[0] && !stopFlag) {
+        int m = 0, u = 0;
+        if (covers_score(job->id, &m, &u)) {
+            job->metacritic = m;
+            job->userRating = u;
+        } else {
+            ensure_titles();
+            const char *t = title_for_id(job->id);
+            if (!t || !t[0]) t = job->title;
+            if (t && t[0]) {
+                char q[200], url[400];
+                size_t j = 0;
+                for (const unsigned char *c = (const unsigned char *)t; *c && j + 4 < sizeof(q); c++) {
+                    if ((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9')) q[j++] = (char)*c;
+                    else j += (size_t)snprintf(q + j, sizeof(q) - j, "%%%02X", *c);
+                }
+                q[j] = '\0';
+                snprintf(url, sizeof(url), "https://api.rawg.io/api/games?key=%s&search=%s&search_precise=true&page_size=8",
+                         rawgKey, q);
+                char *json = net_fetch_text(&plainCfg, url, err, sizeof(err));
+                if (json) {
+                    if (!covers_parse_rawg(json, t, &m, &u)) m = u = 0; /* not on RAWG: remember that too */
+                    free(json);
+                    job->metacritic = m;
+                    job->userRating = u;
+                    SDL_LockMutex(mtx);
+                    score_put(job->id, m, u);
+                    SDL_UnlockMutex(mtx);
+                    FILE *f = fopen(scorePath, "a");
+                    if (f) {
+                        fprintf(f, "%s\t%d\t%d\n", job->id, m, u);
+                        fclose(f);
+                    }
+                }
+            }
+        }
+    }
+
+    /* 4. optional copy for the loader, so it doesn't have to download it again */
     if (job->hasCover && loaderDir[0] && exists(loaderRoot)) {
         char dst[300];
         snprintf(dst, sizeof(dst), "%s/%s.png", loaderDir, job->id);
@@ -749,9 +1032,12 @@ void covers_start(const Config *cfg, const char *cache, const char *lRoot, const
     snprintf(loaderRoot, sizeof(loaderRoot), "%s", lRoot ? lRoot : "");
     snprintf(loaderDir, sizeof(loaderDir), "%s", lDir ? lDir : "");
     snprintf(idCachePath, sizeof(idCachePath), "%s", idPath);
+    snprintf(rawgKey, sizeof(rawgKey), "%s", cfg->rawg_key);
+    snprintf(scorePath, sizeof(scorePath), "%s/scores.txt", cache);
     mkdir(cacheDir, 0777);
     id_cache_load();
     scan_cover_dir();
+    scores_load();
     mtx = SDL_CreateMutex();
     stopFlag = 0;
     thread = SDL_CreateThread(worker, "covers", NULL);
@@ -772,6 +1058,9 @@ void covers_stop(void)
     free(titles);
     titles = NULL;
     nTitles = 0;
+    free(scores);
+    scores = NULL;
+    nScores = capScores = 0;
     pending = results = NULL;
     idCache = NULL;
     idTable = NULL;

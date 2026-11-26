@@ -67,7 +67,6 @@
 #define TMP_DIR        APP_DIR "/tmp"
 #define COVER_DIR      APP_DIR "/covers"
 #define FAV_PATH       APP_DIR "/favorites.txt"
-#define RATINGS_PATH   APP_DIR "/ratings.txt"
 #define QUEUE_PATH     APP_DIR "/queue.txt"
 #define STATE_PATH     APP_DIR "/state.ini"
 #define REMOTE_LINKS   APP_DIR "/links_remote.txt"
@@ -111,7 +110,7 @@ static const char *drive_prefix(bool usb) /* for messages */
 static char gListNote[300]; /* shown once after loading (e.g. links_url unreachable) */
 
 /* list options (+ menu), saved in state.ini */
-enum { SORT_LIST, SORT_AZ, SORT_INSTALLED, SORT_RATING, SORT_COUNT };
+enum { SORT_LIST, SORT_AZ, SORT_INSTALLED, SORT_META, SORT_COUNT };
 enum { SHOW_ALL, SHOW_FAV, SHOW_INSTALLED, SHOW_NOT_INSTALLED, SHOW_QUEUED, SHOW_COUNT };
 static int gSort, gShow;
 static bool gHideDupes;
@@ -446,7 +445,8 @@ typedef struct {
     bool installed;
     bool partial;
     bool fav;
-    int rating;          /* your rating, 1-5 (0 = not rated) */
+    int metacritic;      /* from RAWG: 1-100, 0 = none */
+    bool scoreKnown;     /* looked up already (or nothing to look up) */
     uint64_t remoteSize; /* from a HEAD request on the details screen (0 = unknown) */
     char coverWhy[120];  /* why the cover worker found no ID / cover (details screen) */
 } Entry;
@@ -695,7 +695,7 @@ static void fill_item(int i)
         it->cover = e->cover;
         it->fav = e->fav;
         it->queuePos = queue_pos(i);
-        it->rating = e->rating;
+        it->metacritic = e->metacritic;
         it->status = e->installed ? UI_ST_INSTALLED : e->partial ? UI_ST_PARTIAL : UI_ST_NEW;
         if (e->installed) it->kind = e->gc ? UI_KIND_GC : UI_KIND_WII;
         else if (e->discId[0] && !ends_with_ci(e->link.url, ".7z") && !ends_with_ci(e->link.url, ".zip"))
@@ -747,7 +747,8 @@ static int cmp_view(const void *a, const void *b)
 {
     int ia = *(const int *)a, ib = *(const int *)b;
     if (gSort == SORT_INSTALLED && entries[ia].installed != entries[ib].installed) return entries[ia].installed ? -1 : 1;
-    if (gSort == SORT_RATING && entries[ia].rating != entries[ib].rating) return entries[ib].rating - entries[ia].rating;
+    if (gSort == SORT_META && entries[ia].metacritic != entries[ib].metacritic)
+        return entries[ib].metacritic - entries[ia].metacritic; /* best first, no score last */
     if (gSort == SORT_AZ) {
         int c = strcasecmp(entry_title(ia), entry_title(ib));
         if (c) return c;
@@ -996,15 +997,6 @@ static void save_hash_list(const char *path, bool favs)
     fclose(f);
 }
 
-static void save_ratings(void)
-{
-    FILE *f = fopen(RATINGS_PATH, "w");
-    if (!f) return;
-    for (int i = 0; i < entryCount; i++)
-        if (entries[i].rating > 0) fprintf(f, "%s\t%d\n", entries[i].hash, entries[i].rating);
-    fclose(f);
-}
-
 static void load_lists(void)
 {
     free(gQueue);
@@ -1017,17 +1009,6 @@ static void load_lists(void)
             line[strcspn(line, "\r\n")] = '\0';
             int i = find_entry(line);
             if (i >= 0) entries[i].fav = true;
-        }
-        fclose(f);
-    }
-    f = fopen(RATINGS_PATH, "r"); /* hash <TAB> stars */
-    if (f) {
-        while (fgets(line, sizeof(line), f)) {
-            char *tab = strchr(line, '\t');
-            if (!tab) continue;
-            *tab = '\0';
-            int stars = atoi(tab + 1), i = find_entry(line);
-            if (i >= 0 && stars >= 1 && stars <= 5) entries[i].rating = stars;
         }
         fclose(f);
     }
@@ -1240,7 +1221,8 @@ static void cover_window_update(void)
             if ((d == 0 && sgn < 0) || pos < 0 || pos >= gViewCount || (sgn < 0 && d > 8)) continue;
             int i = gView[pos];
             Entry *e = &entries[i];
-            if (e->coverState != COVER_UNKNOWN) continue;
+            bool wantScore = !e->scoreKnown && e->discId[0];
+            if (e->coverState != COVER_UNKNOWN && !wantScore) continue;
             CoverJob *j = &jobs[n++];
             j->index = i;
             snprintf(j->hash, sizeof(j->hash), "%s", e->hash);
@@ -1266,6 +1248,9 @@ static void prepare_cover(Entry *e)
     else id_from_filename(file, e->discId);
     set_display(e);
     e->coverState = covers_have(e->discId) ? COVER_CACHED : COVER_UNKNOWN;
+    int m = 0, u = 0;
+    e->scoreKnown = !gCfg.rawg_key[0] || covers_score(e->discId, &m, &u);
+    e->metacritic = m;
 }
 
 /* Pick up whatever the worker finished since last frame. */
@@ -1286,6 +1271,10 @@ static void poll_covers(void)
             if (!e->discTitle[0] && done[k].title[0]) snprintf(e->discTitle, sizeof(e->discTitle), "%s", done[k].title);
             set_display(e);
             snprintf(e->coverWhy, sizeof(e->coverWhy), "%s", done[k].why);
+            if (done[k].metacritic >= 0) {
+                e->metacritic = done[k].metacritic;
+                e->scoreKnown = true;
+            }
             /* texture loads when near; a temporary failure (network, title list) is asked again later */
             e->coverState = done[k].hasCover ? COVER_CACHED : (done[k].retry && !e->discId[0]) ? COVER_UNKNOWN : COVER_NONE;
             if (done[k].retry) gRetryCovers = true;
@@ -2893,12 +2882,6 @@ static void details_screen(const Config *cfg, int idx)
                 save_hash_list(FAV_PATH, true);
                 fill_item(idx);
             }
-            if (in.pressed & (VPAD_BUTTON_L | VPAD_BUTTON_R)) { /* your rating: R up, L down (0-5) */
-                int r = e->rating + ((in.pressed & VPAD_BUTTON_R) ? 1 : -1);
-                e->rating = r < 0 ? 0 : r > 5 ? 5 : r;
-                save_ratings();
-                fill_item(idx);
-            }
             if ((in.pressed & VPAD_BUTTON_MINUS) && (e->installed || e->partial)) confirm = true;
         }
         if (!gVisible) continue;
@@ -2929,6 +2912,9 @@ static void details_screen(const Config *cfg, int idx)
         } else snprintf(statusText, sizeof(statusText), "Not downloaded");
         snprintf(src, sizeof(src), "%s  -  %s", host, file);
         if (e->link.sumType[0]) snprintf(sumText, sizeof(sumText), "%s, checked after download", e->link.sumType);
+        char metaText[80] = "";
+        if (e->metacritic > 0) snprintf(metaText, sizeof(metaText), "%d / 100  -  via RAWG.io", e->metacritic);
+        else if (gCfg.rawg_key[0]) snprintf(metaText, sizeof(metaText), e->scoreKnown ? "No score on RAWG" : "Looking it up...");
 
         UiDetails d;
         memset(&d, 0, sizeof(d));
@@ -2938,14 +2924,17 @@ static void details_screen(const Config *cfg, int idx)
         d.status = e->installed ? UI_ST_INSTALLED : e->partial ? UI_ST_PARTIAL : UI_ST_NEW;
         d.fav = e->fav;
         d.queuePos = queue_pos(idx);
-        d.rating = e->rating;
-        const char *rows[][2] = {{"Game ID", idText}, {"Type", typeText}, {"Region", regionText},
-                                 {"Size", sizeText},  {"Location", statusText}, {"Source", src},
-                                 {"Checksum", sumText}};
-        int nr = e->link.sumType[0] ? 7 : 6;
-        for (int i = 0; i < nr; i++) {
-            d.rows[i][0] = rows[i][0];
-            d.rows[i][1] = rows[i][1];
+        d.metacritic = e->metacritic;
+        const char *rows[][2] = {{"Game ID", idText},     {"Type", typeText},       {"Region", regionText},
+                                 {"Metacritic", metaText}, {"Size", sizeText},       {"Location", statusText},
+                                 {"Source", src},          {"Checksum", sumText}};
+        int nr = 0;
+        for (int i = 0; i < 8; i++) {
+            if (i == 3 && !metaText[0]) continue;      /* no key: no Metacritic row */
+            if (i == 7 && !e->link.sumType[0]) continue; /* no checksum given */
+            d.rows[nr][0] = rows[i][0];
+            d.rows[nr][1] = rows[i][1];
+            nr++;
         }
         d.rowCount = nr;
 
@@ -3453,7 +3442,7 @@ static void reapply_view(void)
 
 static int menu_screen(void)
 {
-    static const char *sorts[] = {"List order", "A-Z", "Installed first", "Highest rated"};
+    static const char *sorts[] = {"List order", "A-Z", "Installed first", "Metacritic"};
     static const char *shows[] = {"All games", "Favorites", "Installed", "Not installed", "Queued"};
     enum { M_QUEUE, M_CLEAR, M_QOFF, M_TARGET, M_SORT, M_SHOW, M_ONLY, M_DUPES, M_REGION, M_SD, M_MUSIC, M_CHIME, M_RELOAD,
            M_EXIT, M_N };

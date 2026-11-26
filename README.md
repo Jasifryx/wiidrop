@@ -44,7 +44,7 @@ Features
   (readme `.txt`, `.nfo`…) is skipped. The CRC is verified.
 - **GUI:** animated, GPU-rendered interface (SDL2) on TV and GamePad, using the Wii U's own system font.
   Touch works too (including the search keyboard), and so do Wii Remotes, Classic Controllers and Pro Controllers.
-- **Game details:** cover, game ID, type, region, size, where it's installed, and actions (install, queue, favorite, rate,
+- **Game details:** cover, game ID, type, region, size, where it's installed, and actions (install, queue, favorite,
   delete).
 - **Download queue:** queue games with **Y**, then *Download the queue* in the **+** menu installs them one
   after another, with the time left for the whole queue. Problems are collected into one summary at the end; B
@@ -63,8 +63,12 @@ Features
   refused and never written to. It uses Aroma's Mocha for raw access to the drive and FatFs for the FAT32 file
   system; *Installed games* lists what's on both the SD card and the USB drive. **New and only tested on a PC so
   far: try it on a spare drive with nothing important on it first.**
-- **Rate, sort, filter, favorite:** rate games 1-5 stars on their details screen (**L/R**); sort by list order / A-Z
-  / installed first / highest rated; show all, favorites, installed, not
+- **Metacritic scores (optional):** put your own free [RAWG](https://rawg.io) API key in config.ini
+  (`rawg_key`, get one at [rawg.io/apidocs](https://rawg.io/apidocs)) and each game's Metacritic score shows on its
+  cover and details screen, colour-coded like Metacritic's. Each game is looked up once, the first time it's near
+  the selection, and remembered on the SD card (`covers/scores.txt`), so it works offline afterwards. Scores and
+  data from RAWG.
+- **Sort, filter, favorite:** sort by list order / A-Z / installed first / Metacritic; show all, favorites, installed, not
   installed or queued games; show only one region (USA / Europe / Japan, from the name's Redump tags or the
   game ID; games whose region can't be told stay visible); hide region duplicates (keeps the installed copy,
   else your preferred region).
@@ -125,7 +129,7 @@ The Wii U Menu icon is `meta/icon.png` (redraw it with `python tools/make_icon.p
    | **-** | search (Wii U keyboard; every word must match, e.g. `mario usa`) | delete the game / discard a partial download |
    | **B** | clear the search | back |
    | **+** | menu: download the queue, sort, show, region duplicates, music, reload, exit | |
-   | **L/R**, **ZL/ZR** | previous/next letter, 100 titles up/down (in *Show: Queued*, L/R move the game in the queue) | rate the game: R up, L down |
+   | **L/R**, **ZL/ZR** | previous/next letter, 100 titles up/down (in *Show: Queued*, L/R move the game in the queue) | |
 
    During a download **B** pauses (progress is kept). HOME is disabled only while a download is running.
    Wii Remote: 1 = X, 2 = Y. Classic / Pro Controller buttons work like the GamePad's.
@@ -172,6 +176,7 @@ connections = 4 # parallel connections per download (1-8); 1 for hosts that limi
 links_url =     # load links.txt from this URL instead (the last copy is kept on the SD card)
 region = USA    # preferred region for "hide region duplicates": USA, Europe or Japan
 update_check = 1 # look for a new WiiDrop on GitHub at start (always asks first)
+rawg_key =      # your own free RAWG API key (rawg.io/apidocs) for Metacritic scores
 ```
 HTTPS certificates are checked against Mozilla's list of trusted authorities, which is built into WiiDrop
 (`data/cacert.pem`, from curl.se). Servers with a normal certificate (Let's Encrypt etc.) just work. For your own
@@ -221,6 +226,7 @@ its source code under the same license. The libraries it uses keep their own lic
 ## Credits
 
 - Box art and the title list: [GameTDB](https://www.gametdb.com).
+- Metacritic scores, when you add your own key: data from [RAWG](https://rawg.io).
 - Libraries: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Checking an RVZ on your PC

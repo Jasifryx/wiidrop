@@ -25,6 +25,8 @@ typedef struct {
     char title[65]; /* disc title from the header, if peeked */
     int hasCover;   /* cover PNG is in the cache */
     int retry;      /* failed for a reason that may go away (network): ask again later */
+    int metacritic; /* filled by the worker: Metacritic score 1-100, 0 = none, -1 = not looked up */
+    int userRating; /* RAWG user rating x10 (0-50), 0 = none */
     char why[120];  /* why there's no ID / cover, for the details screen */
 } CoverJob;
 
@@ -55,4 +57,11 @@ int covers_cached_id(const char *hash, char id[7], char title[65]);
 /* Title -> ID lookup against GameTDB's title list (downloaded once into the cover folder as
    titles.txt). Exposed for tests; the worker uses it when the file itself can't be peeked. */
 int covers_load_titles(const char *path);
+
+/* Scores from RAWG, cached in the cover folder (scores.txt). 1 if this ID was looked up already
+   (metacritic 0 then means "no score"). */
+int covers_score(const char *id, int *metacritic, int *userRating);
+/* Pull name / metacritic / rating for each game out of a RAWG /api/games reply, and pick the one whose
+   name matches `title`. Exposed for tests. 1 if a game matched. */
+int covers_parse_rawg(const char *json, const char *title, int *metacritic, int *userRating);
 int covers_id_from_name(const char *fileName, char id[7], char title[65]);
