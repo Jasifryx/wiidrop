@@ -3434,7 +3434,7 @@ static bool set_target(bool usb, bool quiet)
 }
 
 /* + menu. Returns MENU_* */
-enum { MENU_NONE, MENU_EXIT, MENU_QUEUE, MENU_RELOAD, MENU_STORAGE };
+enum { MENU_NONE, MENU_EXIT, MENU_QUEUE, MENU_RELOAD, MENU_STORAGE, MENU_UPDATE };
 
 static void reapply_view(void)
 {
@@ -3450,7 +3450,7 @@ static int menu_screen(void)
     static const char *sorts[] = {"List order", "A-Z", "Installed first", "Metacritic"};
     static const char *shows[] = {"All games", "Favorites", "Installed", "Not installed", "Queued"};
     enum { M_QUEUE, M_CLEAR, M_QOFF, M_TARGET, M_SORT, M_SHOW, M_ONLY, M_DUPES, M_REGION, M_SD, M_MUSIC, M_CHIME, M_RELOAD,
-           M_EXIT, M_N };
+           M_UPDATE, M_EXIT, M_N };
     int sel = gQueueCount ? M_QUEUE : M_SORT;
     while (!gQuit) {
         pump();
@@ -3472,6 +3472,7 @@ static int menu_screen(void)
             {"Music", gMusicState == 1 ? "On" : "Off", false, gMusicState < 0},
             {"Sounds", gChimeOn ? "On" : "Off", false, !gChime},
             {"Reload the list", NULL, false, false},
+            {"Check for updates", NULL, false, !gNetOk},
             {"Exit WiiDrop", NULL, true, false},
         };
         int step = 0;
@@ -3532,6 +3533,7 @@ static int menu_screen(void)
                 break;
             case M_RELOAD: if (activate) return MENU_RELOAD; break;
             case M_SD: if (activate) return MENU_STORAGE; break;
+            case M_UPDATE: if (activate) return MENU_UPDATE; break;
             case M_EXIT: if (activate) return MENU_EXIT; break;
             }
         }
@@ -3556,7 +3558,8 @@ typedef struct {
 } UpdateInfo;
 
 static UpdateInfo gUpd;
-static SDL_atomic_t gUpdState; /* 0 not checked, 1 checking, 2 a newer version is available, 3 nothing */
+static SDL_atomic_t gUpdState; /* 0 not checked, 1 checking, 2 a newer version is available, 3 nothing, 4 failed */
+static char gUpdErr[256];
 static Config gUpdCfg;
 
 /* "v1.0.0-beta.3" -> {1, 0, 0, rank, n}: rank 9 = final, 3 = rc, 2 = beta, 1 = alpha */
@@ -3664,8 +3667,10 @@ static int update_worker(void *ud)
             gUpd = best;
             found = 1;
         }
+    } else {
+        snprintf(gUpdErr, sizeof(gUpdErr), "%s", err[0] ? err : "GitHub didn't answer.");
     }
-    SDL_AtomicSet(&gUpdState, found ? 2 : 3);
+    SDL_AtomicSet(&gUpdState, found ? 2 : json ? 3 : 4);
     return 0;
 }
 
@@ -3846,6 +3851,31 @@ static bool update_offer(void)
     return false;
 }
 
+/* + menu -> Check for updates. Returns true if WiiDrop should close (updated). */
+static bool update_check_now(const Config *cfg)
+{
+    if (SDL_AtomicGet(&gUpdState) != 1) update_check_start(cfg);
+    while (!gQuit && SDL_AtomicGet(&gUpdState) == 1) {
+        pump();
+        Input in = read_input();
+        if (in.pressed & (VPAD_BUTTON_A | VPAD_BUTTON_B)) return false; /* keeps checking; it asks if it finds one */
+        if (!gVisible) continue;
+        draw_list_scene();
+        ui_message(UI_MSG_INFO, "Checking for updates", "Asking GitHub for the newest WiiDrop...", "Hide");
+        ui_end_frame();
+    }
+    int st = SDL_AtomicGet(&gUpdState);
+    if (st == 2) return update_offer();
+    if (st == 4) {
+        message_box(UI_MSG_ERROR, "Couldn't check for updates", gUpdErr);
+    } else {
+        char msg[120];
+        snprintf(msg, sizeof(msg), "You have the newest version (%s).", WIIDROP_VERSION);
+        message_box(UI_MSG_OK, "Up to date", msg);
+    }
+    return false;
+}
+
 /* ------------------------------------------------------------------ main */
 
 static bool init_video(void)
@@ -3933,6 +3963,10 @@ int main(int argc, char **argv)
                 } else if (m == MENU_STORAGE) {
                     storage_screen();
                     reapply_view();
+                } else if (m == MENU_UPDATE && netOk && update_check_now(&cfg)) {
+                    exitStart = now_s(); /* updated: close so the new version can start */
+                    gMusicTarget = 0;
+                    if (gMusic) Mix_FadeOutMusic(400);
                 }
                 continue;
             }

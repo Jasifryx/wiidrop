@@ -78,7 +78,8 @@ The game's ID, title and type come from the file's own disc header, so all you s
   *SD card: installed games* in the + menu lists every Wii and GameCube game on the card (also ones copied
   over from a PC) with its size and the space left, and deletes any of them.
 - **Updates:** at start WiiDrop looks for a newer release on GitHub and asks before updating. The download is
-  checked against GitHub's SHA-256 before it replaces the app. Turn it off with `update_check = 0`.
+  checked against GitHub's SHA-256 before it replaces the app. Turn the start-up check off with `update_check = 0`;
+  + menu → *Check for updates* checks any time.
 - **Install to a USB drive (lightly tested):** + menu → *Install to* → *USB drive*. Games go to `usb:/wbfs/…` and
   `usb:/games/…` on a **FAT32** USB drive, where USB Loader GX and Nintendont find them, and downloads are staged
   on the drive too (`usb:/wiidrop/tmp`). Drives that aren't FAT32 (NTFS, exFAT, a Wii U-formatted drive) are
