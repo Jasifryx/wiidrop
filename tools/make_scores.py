@@ -75,8 +75,23 @@ def close_match(a, b):
     return dice if common >= 2 and dice >= 0.8 else 0
 
 
+def ask_key():
+    """A small password window (works where a terminal can't take hidden input), else a hidden terminal prompt."""
+    try:
+        import tkinter
+        from tkinter import simpledialog
+        root = tkinter.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        key = simpledialog.askstring("WiiDrop scores", "Paste your RAWG API key:", show="*", parent=root)
+        root.destroy()
+        return (key or "").strip()
+    except Exception:
+        return getpass.getpass("RAWG API key (hidden): ").strip()
+
+
 def main():
-    key = os.environ.get("RAWG_KEY") or getpass.getpass("RAWG API key (hidden): ").strip()
+    key = os.environ.get("RAWG_KEY") or ask_key()
     if not key:
         sys.exit("No key given.")
 
