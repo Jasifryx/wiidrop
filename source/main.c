@@ -45,7 +45,6 @@
 #include <sys/statvfs.h>
 #include <unistd.h>
 
-#include "bgm.h"
 #include "config.h"
 #include "covers.h"
 #include "disc.h"
@@ -68,6 +67,7 @@
 #define TMP_DIR        APP_DIR "/tmp"
 #define COVER_DIR      APP_DIR "/covers"
 #define FAV_PATH       APP_DIR "/favorites.txt"
+#define RATINGS_PATH   APP_DIR "/ratings.txt"
 #define QUEUE_PATH     APP_DIR "/queue.txt"
 #define STATE_PATH     APP_DIR "/state.ini"
 #define REMOTE_LINKS   APP_DIR "/links_remote.txt"
@@ -111,7 +111,7 @@ static const char *drive_prefix(bool usb) /* for messages */
 static char gListNote[300]; /* shown once after loading (e.g. links_url unreachable) */
 
 /* list options (+ menu), saved in state.ini */
-enum { SORT_LIST, SORT_AZ, SORT_INSTALLED, SORT_COUNT };
+enum { SORT_LIST, SORT_AZ, SORT_INSTALLED, SORT_RATING, SORT_COUNT };
 enum { SHOW_ALL, SHOW_FAV, SHOW_INSTALLED, SHOW_NOT_INSTALLED, SHOW_QUEUED, SHOW_COUNT };
 static int gSort, gShow;
 static bool gHideDupes;
@@ -131,9 +131,7 @@ static bool gSearchOpen;
 static double gSearchOpened;
 static char gSearchBuf[512];
 
-static Mix_Music *gMusic;     /* the user's own sd:/wiiu/apps/wiidrop/music.mp3 */
-static bool gGenMusic;        /* else WiiDrop's own generated music (bgm.c) */
-static volatile float gGenGain;
+static Mix_Music *gMusic;     /* your own sd:/wiiu/apps/wiidrop/music.mp3 (there's no built-in music) */
 static int gMusicState = -1; /* -1 none, 0 muted, 1 playing */
 static float gMusicVol, gMusicTarget;
 static double gMusicLast;
@@ -152,18 +150,6 @@ static void fmt_size(char *out, size_t n, uint64_t b)
 
 /* ------------------------------------------------------------------ music */
 
-/* SDL_mixer asks for more of the generated music here (audio thread) */
-static void gen_music_cb(void *ud, Uint8 *stream, int len)
-{
-    (void)ud;
-    float g = gGenGain;
-    if (g <= 0.0001f) { /* muted: don't spend CPU on it */
-        memset(stream, 0, (size_t)len);
-        return;
-    }
-    bgm_render((int16_t *)stream, len / 4, g);
-}
-
 static void music_init(bool startOn)
 {
     if (Mix_OpenAudio(48000, AUDIO_S16SYS, 2, 2048) != 0) return;
@@ -171,15 +157,7 @@ static void music_init(bool startOn)
 
     struct stat st;
     if (stat(MUSIC_PATH, &st) == 0) gMusic = Mix_LoadMUS(MUSIC_PATH); /* the user's own track wins */
-    if (!gMusic) {
-        int freq = 0, channels = 0;
-        Uint16 fmt = 0;
-        if (!Mix_QuerySpec(&freq, &fmt, &channels) || fmt != AUDIO_S16SYS || channels != 2) return;
-        bgm_init(freq, (uint32_t)OSGetTime()); /* different every time you start WiiDrop */
-        gGenGain = 0;
-        gGenMusic = true;
-        Mix_HookMusic(gen_music_cb, NULL);
-    }
+    if (!gMusic) return; /* no built-in music: only your own track (the menu hides the toggle) */
 
     gMusicState = startOn ? 1 : 0;
     gMusicVol = 0;
@@ -195,17 +173,13 @@ static void music_init(bool startOn)
 /* Smooth fades for mute/unmute; called every frame from pump(). */
 static void music_update(void)
 {
-    if (!gMusic && !gGenMusic) return;
+    if (!gMusic) return;
     double t = now_s();
     float dt = (float)(t - gMusicLast);
     gMusicLast = t;
     float step = dt * (gMusicTarget > gMusicVol ? 0.6f : 2.5f); /* slow fade in, quick fade out */
     if (gMusicVol < gMusicTarget) gMusicVol = gMusicVol + step > gMusicTarget ? gMusicTarget : gMusicVol + step;
     else if (gMusicVol > gMusicTarget) gMusicVol = gMusicVol - step < gMusicTarget ? gMusicTarget : gMusicVol - step;
-    if (gGenMusic) {
-        gGenGain = gMusicVol * gMusicVol * (MUSIC_MAX_VOLUME / 128.0f);
-        return;
-    }
     Mix_VolumeMusic((int)(gMusicVol * gMusicVol * MUSIC_MAX_VOLUME));
     if (gMusicTarget == 0 && gMusicVol <= 0 && !Mix_PausedMusic()) Mix_PauseMusic();
 }
@@ -225,10 +199,6 @@ static void music_toggle(void)
 
 static void music_shutdown(void)
 {
-    if (gGenMusic) {
-        Mix_HookMusic(NULL, NULL);
-        gGenMusic = false;
-    }
     if (gMusic) {
         Mix_HaltMusic();
         Mix_FreeMusic(gMusic);
@@ -476,6 +446,7 @@ typedef struct {
     bool installed;
     bool partial;
     bool fav;
+    int rating;          /* your rating, 1-5 (0 = not rated) */
     uint64_t remoteSize; /* from a HEAD request on the details screen (0 = unknown) */
     char coverWhy[120];  /* why the cover worker found no ID / cover (details screen) */
 } Entry;
@@ -724,6 +695,7 @@ static void fill_item(int i)
         it->cover = e->cover;
         it->fav = e->fav;
         it->queuePos = queue_pos(i);
+        it->rating = e->rating;
         it->status = e->installed ? UI_ST_INSTALLED : e->partial ? UI_ST_PARTIAL : UI_ST_NEW;
         if (e->installed) it->kind = e->gc ? UI_KIND_GC : UI_KIND_WII;
         else if (e->discId[0] && !ends_with_ci(e->link.url, ".7z") && !ends_with_ci(e->link.url, ".zip"))
@@ -775,6 +747,7 @@ static int cmp_view(const void *a, const void *b)
 {
     int ia = *(const int *)a, ib = *(const int *)b;
     if (gSort == SORT_INSTALLED && entries[ia].installed != entries[ib].installed) return entries[ia].installed ? -1 : 1;
+    if (gSort == SORT_RATING && entries[ia].rating != entries[ib].rating) return entries[ib].rating - entries[ia].rating;
     if (gSort == SORT_AZ) {
         int c = strcasecmp(entry_title(ia), entry_title(ib));
         if (c) return c;
@@ -1023,6 +996,15 @@ static void save_hash_list(const char *path, bool favs)
     fclose(f);
 }
 
+static void save_ratings(void)
+{
+    FILE *f = fopen(RATINGS_PATH, "w");
+    if (!f) return;
+    for (int i = 0; i < entryCount; i++)
+        if (entries[i].rating > 0) fprintf(f, "%s\t%d\n", entries[i].hash, entries[i].rating);
+    fclose(f);
+}
+
 static void load_lists(void)
 {
     free(gQueue);
@@ -1035,6 +1017,17 @@ static void load_lists(void)
             line[strcspn(line, "\r\n")] = '\0';
             int i = find_entry(line);
             if (i >= 0) entries[i].fav = true;
+        }
+        fclose(f);
+    }
+    f = fopen(RATINGS_PATH, "r"); /* hash <TAB> stars */
+    if (f) {
+        while (fgets(line, sizeof(line), f)) {
+            char *tab = strchr(line, '\t');
+            if (!tab) continue;
+            *tab = '\0';
+            int stars = atoi(tab + 1), i = find_entry(line);
+            if (i >= 0 && stars >= 1 && stars <= 5) entries[i].rating = stars;
         }
         fclose(f);
     }
@@ -1448,7 +1441,7 @@ static void draw_list_scene(void)
         int ce = cur_entry();
         UiHint hints[5] = {{"A", "Details"},
                            {"Y", ce >= 0 && queue_pos(ce) ? "Unqueue" : "Queue"},
-                           {"X", ce >= 0 && entries[ce].fav ? "Unstar" : "Star"},
+                           {"X", ce >= 0 && entries[ce].fav ? "Unfavorite" : "Favorite"},
                            {"-", "Search"},
                            {"+", "Menu"}};
         char right[64];
@@ -1506,7 +1499,7 @@ static void show_progress(const UiProgress *p)
    progress screen), so it's switched off while a transfer runs. */
 /* The progress screen is drawn from inside the download loop, so every redraw pauses the network.
    During transfers: redraw 10x a second and don't wait for the screen refresh (vsync) to present. */
-#define PROGRESS_INTERVAL (1.0 / 10)
+#define PROGRESS_INTERVAL (1.0 / 15)
 
 static void transfer_begin(void)
 {
@@ -2900,6 +2893,12 @@ static void details_screen(const Config *cfg, int idx)
                 save_hash_list(FAV_PATH, true);
                 fill_item(idx);
             }
+            if (in.pressed & (VPAD_BUTTON_L | VPAD_BUTTON_R)) { /* your rating: R up, L down (0-5) */
+                int r = e->rating + ((in.pressed & VPAD_BUTTON_R) ? 1 : -1);
+                e->rating = r < 0 ? 0 : r > 5 ? 5 : r;
+                save_ratings();
+                fill_item(idx);
+            }
             if ((in.pressed & VPAD_BUTTON_MINUS) && (e->installed || e->partial)) confirm = true;
         }
         if (!gVisible) continue;
@@ -2939,6 +2938,7 @@ static void details_screen(const Config *cfg, int idx)
         d.status = e->installed ? UI_ST_INSTALLED : e->partial ? UI_ST_PARTIAL : UI_ST_NEW;
         d.fav = e->fav;
         d.queuePos = queue_pos(idx);
+        d.rating = e->rating;
         const char *rows[][2] = {{"Game ID", idText}, {"Type", typeText}, {"Region", regionText},
                                  {"Size", sizeText},  {"Location", statusText}, {"Source", src},
                                  {"Checksum", sumText}};
@@ -2956,7 +2956,7 @@ static void details_screen(const Config *cfg, int idx)
         int nh = 0;
         hints[nh++] = (UiHint){"A", e->installed ? "Reinstall" : e->partial ? "Resume" : "Install"};
         hints[nh++] = (UiHint){"Y", d.queuePos ? "Unqueue" : "Queue"};
-        hints[nh++] = (UiHint){"X", e->fav ? "Unstar" : "Star"};
+        hints[nh++] = (UiHint){"X", e->fav ? "Unfavorite" : "Favorite"};
         if (e->installed) hints[nh++] = (UiHint){"-", "Delete"};
         else if (e->partial) hints[nh++] = (UiHint){"-", "Discard"};
         hints[nh++] = (UiHint){"B", "Back"};
@@ -3453,8 +3453,8 @@ static void reapply_view(void)
 
 static int menu_screen(void)
 {
-    static const char *sorts[] = {"List order", "A-Z", "Installed first"};
-    static const char *shows[] = {"All games", "Starred", "Installed", "Not installed", "Queued"};
+    static const char *sorts[] = {"List order", "A-Z", "Installed first", "Highest rated"};
+    static const char *shows[] = {"All games", "Favorites", "Installed", "Not installed", "Queued"};
     enum { M_QUEUE, M_CLEAR, M_QOFF, M_TARGET, M_SORT, M_SHOW, M_ONLY, M_DUPES, M_REGION, M_SD, M_MUSIC, M_CHIME, M_RELOAD,
            M_EXIT, M_N };
     int sel = gQueueCount ? M_QUEUE : M_SORT;

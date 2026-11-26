@@ -21,6 +21,7 @@ typedef struct {
     SDL_Texture *cover; /* box art, or NULL to show the coloured type tile */
     bool fav;           /* starred */
     int queuePos;       /* 1-based place in the download queue, 0 = not queued */
+    int rating;         /* your rating, 1-5 stars (0 = not rated) */
 } UiItem;
 
 /* Game details screen. rows: label/value pairs ("Game ID", "RMCE01"). */
@@ -31,6 +32,7 @@ typedef struct {
     UiStatus status;
     bool fav;
     int queuePos;
+    int rating;
     const char *rows[8][2];
     int rowCount;
 } UiDetails;

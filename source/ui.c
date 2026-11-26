@@ -527,8 +527,8 @@ void ui_begin_frame(double t)
     }
 
     /* sunbeams slanting down through the water, slowly swaying */
-    for (int i = 0; i < 6; i++) {
-        float base = 120 + i * 210 + 40 * sinf(tt * 0.21f + i * 1.7f);
+    for (int i = 0; i < 4; i++) {
+        float base = 160 + i * 300 + 40 * sinf(tt * 0.21f + i * 1.7f);
         float w = 50 + 40 * hash01(i, 9);
         float sway = 140 + 30 * sinf(tt * 0.15f + i);
         int a = (int)(10 + 8 * (0.5f + 0.5f * sinf(tt * 0.5f + i * 2.1f)));
@@ -536,21 +536,20 @@ void ui_begin_frame(double t)
                  RGBA(120, 230, 210, 0));
     }
     /* caustic shimmer near the surface */
-    for (int i = 0; i < 7; i++) {
+    for (int i = 0; i < 4; i++) {
         float x = fmodf(hash01(i, 21) * UI_W + tt * (12 + 10 * hash01(i, 22)), UI_W + 400) - 200;
         float y = 90 + 260 * hash01(i, 23) + 20 * sinf(tt * 0.6f + i);
         glow(x, y, 160 + 90 * hash01(i, 24), RGBA(60, 200, 170, 22), true);
     }
     /* rising bubbles */
-    for (int i = 0; i < 40; i++) {
+    for (int i = 0; i < 22; i++) {
         float speed = 14 + hash01(i, 1) * 30;
         float x = hash01(i, 2) * UI_W + sinf(tt * (0.8f + hash01(i, 6)) + i) * 10;
         float span = UI_H + 40;
         float y = UI_H + 20 - fmodf(tt * speed + hash01(i, 3) * span, span);
         float r = 1.5f + hash01(i, 5) * 3.5f;
         int a = y > WATER_Y ? 70 : 30;
-        disc(x, y, r, RGBA(170, 240, 225, a / 2));
-        disc(x - r * 0.35f, y - r * 0.35f, r * 0.35f, RGBA(230, 255, 250, a));
+        disc(x, y, r, RGBA(190, 245, 232, a));
     }
 
     /* the waterline: a bright, gently moving surface with glints */
@@ -558,7 +557,7 @@ void ui_begin_frame(double t)
         glow_line(0, WATER_Y, UI_W, RGBA(140, 240, 215, 150));
         grad_rect(0, WATER_Y - 30, UI_W, 30, RGBA(93, 202, 165, 0), RGBA(93, 202, 165, 0), RGBA(93, 202, 165, 22),
                   RGBA(93, 202, 165, 22));
-        for (int i = 0; i < 18; i++) {
+        for (int i = 0; i < 10; i++) {
             float x = fmodf(hash01(i, 31) * UI_W + tt * (20 + 25 * hash01(i, 32)), UI_W);
             float tw = 0.5f + 0.5f * sinf(tt * (2 + 3 * hash01(i, 33)) + i);
             fill_rect(x, WATER_Y - 0.5f, 6 + 16 * hash01(i, 34), 1.5f, RGBA(220, 255, 245, (int)(40 + 120 * tw)));
@@ -657,6 +656,20 @@ static void star(float cx, float cy, float r, Col c)
     }
 }
 
+static void heart(float cx, float cy, float r, Col c)
+{
+    disc(cx - r * 0.5f, cy - r * 0.15f, r * 0.55f, c);
+    disc(cx + r * 0.5f, cy - r * 0.15f, r * 0.55f, c);
+    triangle(cx - r * 1.02f, cy + 0.02f * r, c, cx + r * 1.02f, cy + 0.02f * r, c, cx, cy + r * 0.95f, c);
+}
+
+/* five stars, the first `n` lit; returns the width drawn */
+static float rating_stars(float x, float cy, int n, float r)
+{
+    for (int k = 0; k < 5; k++) star(x + r + k * r * 2.3f, cy, r, k < n ? C_AMBER : RGBA(98, 146, 140, 120));
+    return 5 * r * 2.3f;
+}
+
 /* a box-art card (or a generated one when there's no art yet), standing with its bottom on y */
 static void card_face(const UiItem *it, float x, float y, float w, float h, bool sel)
 {
@@ -684,7 +697,7 @@ static void card_face(const UiItem *it, float x, float y, float w, float h, bool
 /* the card's reflection under the waterline, rippling */
 static void card_reflection(const UiItem *it, float x, float w, float h)
 {
-    const int slices = 14;
+    const int slices = 7;
     float rh = h * 0.5f, sliceH = rh / slices;
     for (int k = 0; k < slices; k++) {
         float off = sinf((float)T * 1.7f + k * 0.65f + x * 0.01f) * (1.0f + k * 0.45f);
@@ -798,7 +811,7 @@ void ui_list(const UiItem *items, int count, int sel)
             fill_rect(bx + 6, by - 5, 3, 10, C_AMBER);
             fill_rect(bx + 11, by - 5, 3, 10, C_AMBER);
         }
-        if (it->fav) star(x + w - 16, y + 18, 10, C_AMBER);
+        if (it->fav) heart(x + w - 16, y + 18, 9, RGBA(240, 120, 140, 255));
 
         if (nHits < MAX_HITS) {
             hitRect[nHits] = (SDL_FRect){x, y, w, h};
@@ -821,6 +834,7 @@ void ui_list(const UiItem *items, int count, int sel)
         snprintf(q, sizeof(q), "Queue #%d", s->queuePos);
         cx += chip(cx, cy, q, C_ACCENT2) + 8;
     }
+    if (s->rating > 0) cx += rating_stars(cx + 4, cy, s->rating, 8) + 14;
     if (s->subtitle) text(F_S, s->subtitle, cx + 8, cy - font_h(F_S) / 2.0f, C_MUTED, AL_LEFT, (int)(UI_W - 80 - cx - 8));
 }
 
@@ -969,6 +983,35 @@ static void droplet_logo(float cx, float cy, float s)
     disc(cx - r * 0.42f, ccy - r * 0.2f, r * 0.2f, RGBA(255, 255, 255, 120));
 }
 
+/* a polyline as one triangle strip (one draw call); closed joins the last point to the first */
+static void stroke_poly(const float *px, const float *py, int n, float width, Col c, bool closed)
+{
+    enum { MAXP = 96 };
+    if (n < 2 || n > MAXP) return;
+    SDL_Vertex v[(MAXP + 1) * 2];
+    int idx[(MAXP + 1) * 6], nv = 0, ni = 0, segs = closed ? n : n - 1;
+    for (int i = 0; i <= segs; i++) {
+        int k = i % n, prev = (k - 1 + n) % n, next = (k + 1) % n;
+        if (!closed && i == 0) prev = k;
+        if (!closed && i == segs) next = k;
+        float dx = px[next] - px[prev], dy = py[next] - py[prev], len = sqrtf(dx * dx + dy * dy);
+        if (len <= 0) len = 1;
+        float nx = -dy / len * width / 2, ny = dx / len * width / 2;
+        v[nv++] = vtx(px[k] + nx, py[k] + ny, c);
+        v[nv++] = vtx(px[k] - nx, py[k] - ny, c);
+        if (i > 0) {
+            int a = nv - 4;
+            idx[ni++] = a;
+            idx[ni++] = a + 1;
+            idx[ni++] = a + 2;
+            idx[ni++] = a + 1;
+            idx[ni++] = a + 3;
+            idx[ni++] = a + 2;
+        }
+    }
+    SDL_RenderGeometry(R, NULL, v, nv, idx, ni);
+}
+
 static void draw_droplet(float cx, float cy, float r, float fill, bool known)
 {
     float px[DROP_N + 2], py[DROP_N + 2], wx[DROP_N * 2 + 4], wy[DROP_N * 2 + 4];
@@ -991,17 +1034,29 @@ static void draw_droplet(float cx, float cy, float r, float fill, bool known)
             if (wx[i] > xr) xr = wx[i];
         }
     if (xr - xl > 4 && fill > 0.01f) {
-        const int seg = 40;
-        for (int k = 0; k < seg; k++) {
-            float x0 = xl + (xr - xl) * k / seg, x1 = xl + (xr - xl) * (k + 1) / seg;
-            float y0 = level + wave * sinf((float)T * 2.6f + x0 * 0.05f), y1 = level + wave * sinf((float)T * 2.6f + x1 * 0.05f);
-            SDL_Vertex v[4] = {vtx(x0, y0, RGBA(150, 245, 220, 235)), vtx(x1, y1, RGBA(150, 245, 220, 235)),
-                               vtx(x0, level + wave + 1, RGBA(100, 225, 195, 235)),
-                               vtx(x1, level + wave + 1, RGBA(100, 225, 195, 235))};
-            int idx[6] = {0, 1, 2, 1, 3, 2};
-            SDL_RenderGeometry(R, NULL, v, 4, idx, 6);
-            line(x0, y0, x1, y1, 2, RGBA(230, 255, 248, 200));
+        enum { SEG = 32 };
+        SDL_Vertex v[(SEG + 1) * 2];
+        int idx[SEG * 6], ni = 0;
+        float lx[SEG + 1], ly[SEG + 1];
+        for (int k = 0; k <= SEG; k++) { /* the wave body and its foam line, one draw call each */
+            float wx0 = xl + (xr - xl) * k / SEG;
+            float wy0 = level + wave * sinf((float)T * 2.6f + wx0 * 0.05f);
+            v[k * 2] = vtx(wx0, wy0, RGBA(150, 245, 220, 235));
+            v[k * 2 + 1] = vtx(wx0, level + wave + 1, RGBA(100, 225, 195, 235));
+            lx[k] = wx0;
+            ly[k] = wy0;
+            if (k > 0) {
+                int a = (k - 1) * 2;
+                idx[ni++] = a;
+                idx[ni++] = a + 2;
+                idx[ni++] = a + 1;
+                idx[ni++] = a + 2;
+                idx[ni++] = a + 3;
+                idx[ni++] = a + 1;
+            }
         }
+        SDL_RenderGeometry(R, NULL, v, (SEG + 1) * 2, idx, ni);
+        stroke_poly(lx, ly, SEG + 1, 2, RGBA(230, 255, 248, 200), false);
         /* bubbles inside the water */
         for (int i = 0; i < 9; i++) {
             float sp = 25 + 30 * hash01(i, 41);
@@ -1015,10 +1070,7 @@ static void draw_droplet(float cx, float cy, float r, float fill, bool known)
         }
     }
     /* outline + shine */
-    for (int i = 0; i < n; i++) {
-        int j = (i + 1) % n;
-        line(px[i], py[i], px[j], py[j], 3, RGBA(170, 245, 225, 230));
-    }
+    stroke_poly(px, py, n, 3, RGBA(170, 245, 225, 230), true);
     for (int k = 0; k < 9; k++) { /* a curved highlight hugging the left side */
         float ang = (float)M_PI * (0.62f + k * 0.035f);
         disc(cx + r * 0.78f * cosf(ang), cy - r * 0.78f * sinf(ang), 3.2f - k * 0.2f, RGBA(255, 255, 255, 80 - k * 6));
@@ -1176,12 +1228,12 @@ void ui_details(const UiDetails *d)
     /* the cover stands on its own patch of water, with a reflection */
     float ch = 318, cw = ch * 160 / 224.0f, cx = 96, bob = sinf((float)T * 1.6f) * 3;
     float cy = WATER_Y - ch - 8 + bob;
-    UiItem it = {d->title, NULL, d->kind, d->status, d->cover, d->fav, d->queuePos};
+    UiItem it = {d->title, NULL, d->kind, d->status, d->cover, d->fav, d->queuePos, d->rating};
     card_reflection(&it, cx, cw, ch);
     glow(cx + cw / 2, cy + ch / 2, ch * 0.9f, RGBA(93, 202, 165, 45), true);
     shadow(cx + 8, cy + 12, cw - 16, ch - 16, 26, RGBA(0, 0, 0, 160));
     card_face(&it, cx, cy, cw, ch, true);
-    if (d->fav) star(cx + cw - 20, cy + 22, 13, C_AMBER);
+    if (d->fav) heart(cx + cw - 20, cy + 22, 12, RGBA(240, 120, 140, 255));
 
     float x = cx + cw + 80, maxw = UI_W - 70 - x, y = 128;
     shadow(x - 28, y - 20, maxw + 56, 500, 30, RGBA(0, 0, 0, 120));
@@ -1199,6 +1251,10 @@ void ui_details(const UiDetails *d)
         snprintf(q, sizeof(q), "Queue #%d", d->queuePos);
         chx += chip(chx, chy, q, C_ACCENT2) + 8;
     }
+    /* your rating, changed with L / R */
+    float rx = chx + 12;
+    rx += rating_stars(rx, chy, d->rating, 9) + 10;
+    text(F_XS, d->rating ? "L / R to change" : "L / R to rate", rx, chy - font_h(F_XS) / 2.0f, C_MUTED, AL_LEFT, 0);
     y += 52;
     for (int i = 0; i < d->rowCount && i < 8; i++) {
         if (!d->rows[i][0]) continue;
