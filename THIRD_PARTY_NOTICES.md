@@ -53,6 +53,6 @@ LGPL-3.0 require.
   WiiDrop.
 - Box art and the title list come from [GameTDB](https://www.gametdb.com) and are downloaded by the console at
   runtime.
-- Metacritic scores come from [RAWG](https://rawg.io), using the API key you put in config.ini yourself; WiiDrop
-  doesn't include or redistribute any RAWG data.
+- The Metacritic scores and user ratings in `data/scores.tsv` come from [RAWG](https://rawg.io) and are included
+  with RAWG's permission. Disc IDs are matched using GameTDB's title list.
 - There's no built-in music; a `music.mp3` you put on the SD card yourself is played if present.

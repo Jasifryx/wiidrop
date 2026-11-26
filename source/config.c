@@ -34,11 +34,7 @@ static const char *CONFIG_TEMPLATE =
     "region = USA\n"
     "\n"
     "# Look for a new version of WiiDrop on GitHub when it starts (it always asks before updating).\n"
-    "update_check = 1\n"
-    "\n"
-    "# Optional: Metacritic scores, from RAWG (rawg.io). Get your own free API key at https://rawg.io/apidocs\n"
-    "# and paste it here. Each game is looked up once and remembered on the SD card.\n"
-    "rawg_key =\n";
+    "update_check = 1\n";
 
 static const char *LINKS_TEMPLATE =
     "# WiiDrop links - one direct download link per line.\n"
@@ -105,7 +101,6 @@ void config_load(const char *path, Config *cfg)
         } else if (!strcmp(key, "links_url")) snprintf(cfg->links_url, sizeof(cfg->links_url), "%s", val);
         else if (!strcmp(key, "region") && *val) snprintf(cfg->region, sizeof(cfg->region), "%s", val);
         else if (!strcmp(key, "update_check")) cfg->update_check = atoi(val) != 0;
-        else if (!strcmp(key, "rawg_key")) snprintf(cfg->rawg_key, sizeof(cfg->rawg_key), "%s", val);
     }
     fclose(f);
 }

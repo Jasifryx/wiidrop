@@ -85,11 +85,9 @@ The game's ID, title and type come from the file's own disc header, so all you s
   refused and never written to. It uses Aroma's Mocha for raw access to the drive and FatFs for the FAT32 file
   system; *Installed games* lists what's on both the SD card and the USB drive. **USB installs have only been
   lightly tested so far. Back up anything important on the drive first, or try it on a spare drive.**
-- **Metacritic scores (optional):** put your own free [RAWG](https://rawg.io) API key in config.ini
-  (`rawg_key`, get one at [rawg.io/apidocs](https://rawg.io/apidocs)) and each game's Metacritic score shows on its
-  cover and details screen, colour-coded like Metacritic's. Each game is looked up once, the first time it's near
-  the selection, and remembered on the SD card (`covers/scores.txt`), so it works offline afterwards. Scores and
-  data from RAWG.
+- **Metacritic scores:** each game's Metacritic score shows on its cover and details screen, colour-coded like
+  Metacritic's. The scores are built into WiiDrop (`data/scores.tsv`, by disc ID), so there's nothing to set up and
+  they work offline. Data from [RAWG](https://rawg.io), included with RAWG's permission.
 - **Sort, filter, favorite:** sort by list order / A-Z / installed first / Metacritic; show all, favorites, installed, not
   installed or queued games; show only one region (USA / Europe / Japan, from the name's Redump tags or the
   game ID; games whose region can't be told stay visible); hide region duplicates (keeps the installed copy,
@@ -198,7 +196,6 @@ connections = 4 # parallel connections per download (1-8); 1 for hosts that limi
 links_url =     # load links.txt from this URL instead (the last copy is kept on the SD card)
 region = USA    # preferred region for "hide region duplicates": USA, Europe or Japan
 update_check = 1 # look for a new WiiDrop on GitHub at start (always asks first)
-rawg_key =      # your own free RAWG API key (rawg.io/apidocs) for Metacritic scores
 ```
 HTTPS certificates are checked against Mozilla's list of trusted authorities, which is built into WiiDrop
 (`data/cacert.pem`, from curl.se). Servers with a normal certificate (Let's Encrypt etc.) just work. For your own
@@ -248,7 +245,8 @@ its source code under the same license. The libraries it uses keep their own lic
 ## Credits
 
 - Box art and the title list: [GameTDB](https://www.gametdb.com).
-- Metacritic scores, when you add your own key: data from [RAWG](https://rawg.io).
+- Metacritic scores: data from [RAWG](https://rawg.io), included with RAWG's permission. `tools/make_scores.py`
+  rebuilds `data/scores.tsv` (it needs a RAWG API key).
 - Libraries: see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## Checking an RVZ on your PC

@@ -446,7 +446,6 @@ typedef struct {
     bool partial;
     bool fav;
     int metacritic;      /* from RAWG: 1-100, 0 = none */
-    bool scoreKnown;     /* looked up already (or nothing to look up) */
     uint64_t remoteSize; /* from a HEAD request on the details screen (0 = unknown) */
     char coverWhy[120];  /* why the cover worker found no ID / cover (details screen) */
 } Entry;
@@ -1221,8 +1220,7 @@ static void cover_window_update(void)
             if ((d == 0 && sgn < 0) || pos < 0 || pos >= gViewCount || (sgn < 0 && d > 8)) continue;
             int i = gView[pos];
             Entry *e = &entries[i];
-            bool wantScore = !e->scoreKnown && e->discId[0];
-            if (e->coverState != COVER_UNKNOWN && !wantScore) continue;
+            if (e->coverState != COVER_UNKNOWN) continue;
             CoverJob *j = &jobs[n++];
             j->index = i;
             snprintf(j->hash, sizeof(j->hash), "%s", e->hash);
@@ -1249,7 +1247,7 @@ static void prepare_cover(Entry *e)
     set_display(e);
     e->coverState = covers_have(e->discId) ? COVER_CACHED : COVER_UNKNOWN;
     int m = 0, u = 0;
-    e->scoreKnown = !gCfg.rawg_key[0] || covers_score(e->discId, &m, &u);
+    covers_score(e->discId, &m, &u);
     e->metacritic = m;
 }
 
@@ -1271,9 +1269,10 @@ static void poll_covers(void)
             if (!e->discTitle[0] && done[k].title[0]) snprintf(e->discTitle, sizeof(e->discTitle), "%s", done[k].title);
             set_display(e);
             snprintf(e->coverWhy, sizeof(e->coverWhy), "%s", done[k].why);
-            if (done[k].metacritic >= 0) {
-                e->metacritic = done[k].metacritic;
-                e->scoreKnown = true;
+            if (!e->metacritic) { /* the ID may be new: look it up in the built-in table */
+                int m = 0, u = 0;
+                covers_score(e->discId, &m, &u);
+                e->metacritic = m;
             }
             /* texture loads when near; a temporary failure (network, title list) is asked again later */
             e->coverState = done[k].hasCover ? COVER_CACHED : (done[k].retry && !e->discId[0]) ? COVER_UNKNOWN : COVER_NONE;
@@ -2732,6 +2731,11 @@ static int download_entry(const Config *cfg, Entry *e)
     remove(readyPath);
     rmdir(stage);
     snprintf(e->discId, sizeof(e->discId), "%s", e->id);
+    {
+        int m = 0, u = 0;
+        covers_score(e->discId, &m, &u);
+        e->metacritic = m;
+    }
     refresh_status(e);
     e->coverState = covers_have(e->discId) ? COVER_CACHED : COVER_UNKNOWN; /* fetch the art now that the ID is known */
     gWinCenter = -100000;
@@ -2916,7 +2920,6 @@ static void details_screen(const Config *cfg, int idx)
         if (e->link.sumType[0]) snprintf(sumText, sizeof(sumText), "%s, checked after download", e->link.sumType);
         char metaText[80] = "";
         if (e->metacritic > 0) snprintf(metaText, sizeof(metaText), "%d / 100  -  via RAWG.io", e->metacritic);
-        else if (gCfg.rawg_key[0]) snprintf(metaText, sizeof(metaText), e->scoreKnown ? "No score on RAWG" : "Looking it up...");
 
         UiDetails d;
         memset(&d, 0, sizeof(d));

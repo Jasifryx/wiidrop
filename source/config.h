@@ -11,7 +11,6 @@ typedef struct {
     char links_url[1024]; /* optional: fetch links.txt from here (the SD copy is the fallback) */
     char region[16];    /* preferred region for hiding duplicates: USA / Europe / Japan */
     int update_check;   /* 1 = look for a new WiiDrop on GitHub at start (default) */
-    char rawg_key[80];  /* optional: your own free RAWG API key, for Metacritic scores */
 } Config;
 
 /* Loads config.ini, writing a commented template if it does not exist. */
